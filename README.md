@@ -10,18 +10,19 @@ swift run                    # 開發
 swift build -c release       # 產出 .build/release/Spacer
 ```
 
-不需要任何權限（dock 位置用 CGWindowList 的 ownerName + bounds 偵測，
-不碰 Accessibility 也不碰螢幕錄製）。選單列有一個圖示可以 Quit。
+不需要任何權限（dock 位置用 HIServices 私有 API `CoreDockGetRect` 偵測，
+不碰 Accessibility 也不碰螢幕錄製；macOS 26 起 CGWindowList 的 Dock 視窗
+變成全螢幕大小，舊偵測法已失效）。選單列有一個圖示可以 Quit。
 
 ## 行為
 
 - 每 2 秒重新偵測 dock 位置（app 增減會改變 dock 寬度）。
 - dock 自動隱藏、放到左右側、或死角寬度 < 200pt 時，面板自動隱藏。
-- 面板點擊穿透，純顯示，不搶焦點。
+- 面板會吃掉點擊（避免點到桌布觸發「顯示桌面」），但不搶焦點。
 
 ## 目前的取捨（要升級再說）
 
-- 只支援主螢幕、dock 在底部。
+- dock 在哪個螢幕面板就跟到哪個螢幕，但只支援 dock 在底部。
 - 面板內容寫死：左時鐘、右系統數據。想換內容改 `main.swift` 裡的
   `ClockView` / `StatsView` 即可。
 
