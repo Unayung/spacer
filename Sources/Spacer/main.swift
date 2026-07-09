@@ -138,6 +138,18 @@ func memoryUsedBytes() -> Double {
 
 // MARK: - Views
 
+// 每個 widget 的文字縮放倍率，由 Config.textScale 經 environment 傳入
+private struct WidgetScaleKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 1
+}
+
+extension EnvironmentValues {
+    var widgetScale: CGFloat {
+        get { self[WidgetScaleKey.self] }
+        set { self[WidgetScaleKey.self] = newValue }
+    }
+}
+
 extension View {
     @ViewBuilder
     func panelChrome() -> some View {
@@ -155,16 +167,18 @@ extension View {
 }
 
 struct ClockView: View {
+    @Environment(\.widgetScale) private var ws
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { ctx in
             VStack(spacing: 1) {
                 Text(ctx.date, format: .dateTime.hour().minute())
-                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                    .font(.system(size: 30 * ws, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(LinearGradient(colors: [.cyan, .blue],
                                                     startPoint: .top, endPoint: .bottom))
                 Text(ctx.date, format: .dateTime.month().day().weekday(.abbreviated))
-                    .font(.system(size: 11))
+                    .font(.system(size: 11 * ws))
                     .foregroundStyle(.secondary)
             }
         }
@@ -172,6 +186,7 @@ struct ClockView: View {
 }
 
 struct StatsView: View {
+    @Environment(\.widgetScale) private var ws
     @State private var cpu = 0.0
     @State private var memUsed = 0.0
     @State private var sampler = CPUSampler()
@@ -197,20 +212,21 @@ struct StatsView: View {
     private func row(_ title: String, value: Double, label: String) -> some View {
         HStack(spacing: 8) {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .frame(width: 34, alignment: .leading)
+                .font(.system(size: 10 * ws, weight: .semibold))
+                .frame(width: 34 * ws, alignment: .leading)
             ProgressView(value: min(max(value, 0), 1))
                 .progressViewStyle(.linear)
                 .tint(value > 0.8 ? .red : value > 0.5 ? .orange : .green)
                 .frame(width: 120)
             Text(label)
-                .font(.caption.monospacedDigit())
+                .font(.system(size: 10 * ws).monospacedDigit())
                 .foregroundStyle(.secondary)
         }
     }
 }
 
 struct NetView: View {
+    @Environment(\.widgetScale) private var ws
     @State private var rates = (rx: 0.0, tx: 0.0)
     @State private var sampler = NetSampler()
     private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
@@ -222,7 +238,7 @@ struct NetView: View {
             Text("↑ " + fmt(rates.tx))
                 .foregroundStyle(.orange)
         }
-        .font(.caption.monospacedDigit())
+        .font(.system(size: 10 * ws).monospacedDigit())
         .onAppear { rates = sampler.rates(interval: 2) }
         .onReceive(tick) { _ in rates = sampler.rates(interval: 2) }
     }
@@ -234,12 +250,13 @@ struct NetView: View {
 }
 
 struct GitHubView: View {
+    @Environment(\.widgetScale) private var ws
     @State private var text = "GH …"
     private let tick = Timer.publish(every: 300, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Text(text)
-            .font(.callout.monospacedDigit())
+            .font(.system(size: 12 * ws).monospacedDigit())
             .foregroundStyle(.purple)
             .onAppear { refresh() }
             .onReceive(tick) { _ in refresh() }
@@ -259,13 +276,14 @@ struct GitHubView: View {
 }
 
 struct CalendarView: View {
-    @State private var text = "行事曆…"
+    @Environment(\.widgetScale) private var ws
+    @State private var text = "📅 行事曆…"
     @State private var store = EKEventStore()
     private let tick = Timer.publish(every: 300, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        Text("📅 " + text)
-            .font(.callout)
+        Text(text)
+            .font(.system(size: 12 * ws))
             .onAppear { refresh() }
             .onReceive(tick) { _ in refresh() }
     }
@@ -273,7 +291,7 @@ struct CalendarView: View {
     private func refresh() {
         store.requestFullAccessToEvents { granted, _ in
             guard granted else {
-                DispatchQueue.main.async { text = "行事曆未授權" }
+                DispatchQueue.main.async { text = "📅 行事曆未授權" }
                 return
             }
             let now = Date()
@@ -285,10 +303,10 @@ struct CalendarView: View {
                 .sorted { $0.startDate < $1.startDate }
                 .prefix(2)
             let s = events.isEmpty
-                ? "今天沒有行程了"
+                ? "📅 今天沒有行程了"
                 : events.map {
-                    "\($0.startDate.formatted(date: .omitted, time: .shortened)) \($0.title ?? "")"
-                }.joined(separator: "  ·  ")
+                    "📅 \($0.startDate.formatted(date: .omitted, time: .shortened)) \($0.title ?? "")"
+                }.joined(separator: "\n")
             DispatchQueue.main.async { text = s }
         }
     }
@@ -344,6 +362,7 @@ struct MarqueeText: View {
 // 讀系統 Now Playing（YouTube 分頁、Spotify、Music 都會發布）。
 // macOS 15.4+ 鎖了 MediaRemote 私有 API，走 media-control CLI（brew install media-control）
 struct NowPlayingView: View {
+    @Environment(\.widgetScale) private var ws
     @State private var title: String?
     @State private var playing = false
     @State private var artwork: NSImage?
@@ -360,8 +379,9 @@ struct NowPlayingView: View {
             if let title {
                 VStack(alignment: .leading, spacing: 3) {
                     MarqueeText(text: title)
-                        .font(.caption.weight(.semibold))
-                        .frame(width: 170, height: 14)
+                        .font(.system(size: 10 * ws, weight: .semibold))
+                        .frame(height: 14 * ws)
+                        .frame(maxWidth: 170)  // 窄面板時縮到可用寬度，跑馬燈照跑
                     HStack(spacing: 16) {
                         controlButton("backward.fill", "previous-track")
                         controlButton(playing ? "pause.fill" : "play.fill",
@@ -386,7 +406,7 @@ struct NowPlayingView: View {
             runDetached("media-control \(cmd)")
             if cmd == "toggle-play-pause" { playing.toggle() }  // 樂觀更新圖示
         } label: {
-            Image(systemName: symbol).font(.system(size: 12, weight: .semibold))
+            Image(systemName: symbol).font(.system(size: 12 * ws, weight: .semibold))
         }
         .buttonStyle(.plain)
     }
@@ -413,6 +433,7 @@ struct NowPlayingView: View {
 }
 
 struct PomodoroView: View {
+    @Environment(\.widgetScale) private var ws
     @ObservedObject private var model = Pomodoro.shared
 
     var body: some View {
@@ -422,16 +443,18 @@ struct PomodoroView: View {
                     let remain = Int(end.timeIntervalSince(ctx.date))
                     if remain <= 0 {
                         Text("🍅 Done!")
-                            .font(.system(size: 20, weight: .semibold, design: .rounded))
+                            .font(.system(size: 20 * ws, weight: .semibold, design: .rounded))
                             .foregroundStyle(.red)
                     } else {
                         Text(String(format: "🍅 %d:%02d", remain / 60, remain % 60))
-                            .font(.system(size: 20, weight: .medium, design: .rounded))
+                            .font(.system(size: 20 * ws, weight: .medium, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(.orange)
                     }
                 } else {
-                    Text("🍅 —").foregroundStyle(.secondary)
+                    Text("🍅 —")
+                        .font(.system(size: 13 * ws))
+                        .foregroundStyle(.secondary)
                 }
             }
             .contentShape(Rectangle())
@@ -461,6 +484,10 @@ final class Config: ObservableObject {
     @Published var rightWidgets: [String] {
         didSet { d.set(rightWidgets, forKey: "rightWidgets") }
     }
+    // widget id → 文字縮放倍率（1 = 原始大小）
+    @Published var textScale: [String: Double] {
+        didSet { d.set(textScale, forKey: "textScale") }
+    }
 
     private init() {
         leftEnabled = d.object(forKey: "leftEnabled") as? Bool ?? true
@@ -468,6 +495,7 @@ final class Config: ObservableObject {
         leftWidgets = d.stringArray(forKey: "leftWidgets") ?? ["calendar", "pomodoro"]
         rightWidgets = d.stringArray(forKey: "rightWidgets")
             ?? ["stats", "net", "github", "clock"]
+        textScale = d.dictionary(forKey: "textScale") as? [String: Double] ?? [:]
     }
 }
 
@@ -478,27 +506,30 @@ func runDetached(_ cmd: String) {
 struct Widget {
     let id: String
     let title: String
+    let minWidth: CGFloat  // 顯示所需的最小寬度，塞不下的 widget 直接不顯示
     let action: (() -> Void)?  // 點擊該區塊時做什麼；nil = widget 自己處理
     let make: () -> AnyView
 }
 
 let allWidgets: [Widget] = [
-    Widget(id: "clock", title: "Clock",
+    Widget(id: "clock", title: "Clock", minWidth: 100,
            action: { runDetached("open -a Clock") }) { AnyView(ClockView()) },
-    Widget(id: "stats", title: "CPU / RAM",
+    Widget(id: "stats", title: "CPU / RAM", minWidth: 240,
            action: { runDetached("open -a 'Activity Monitor'") }) { AnyView(StatsView()) },
-    Widget(id: "net", title: "Network",
+    Widget(id: "net", title: "Network", minWidth: 110,
            action: { runDetached("open -a 'Activity Monitor'") }) { AnyView(NetView()) },
-    Widget(id: "github", title: "GitHub",
+    Widget(id: "github", title: "GitHub", minWidth: 160,
            action: { runDetached("open https://github.com") }) {
         AnyView(GitHubView())
     },
-    Widget(id: "nowplaying", title: "Now Playing", action: nil) {
+    Widget(id: "nowplaying", title: "Now Playing", minWidth: 250, action: nil) {
         AnyView(NowPlayingView())
     },
-    Widget(id: "calendar", title: "Calendar",
+    Widget(id: "calendar", title: "Calendar", minWidth: 230,
            action: { runDetached("open -a Calendar") }) { AnyView(CalendarView()) },
-    Widget(id: "pomodoro", title: "Pomodoro", action: nil) { AnyView(PomodoroView()) },
+    Widget(id: "pomodoro", title: "Pomodoro", minWidth: 90, action: nil) {
+        AnyView(PomodoroView())
+    },
 ]
 
 struct PanelView: View {
@@ -506,18 +537,36 @@ struct PanelView: View {
     let isLeft: Bool
 
     var body: some View {
-        let ids = isLeft ? config.leftWidgets : config.rightWidgets
-        let items = ids.compactMap { id in allWidgets.first { $0.id == id } }
-        HStack(spacing: 0) {
-            ForEach(items.indices, id: \.self) { i in
-                if i > 0 { Divider().frame(height: 36) }
-                items[i].make()
-                    .frame(maxWidth: .infinity)  // 每個 widget 等寬均分
-                    .contentShape(Rectangle())
-                    .onTapGesture { items[i].action?() }
+        GeometryReader { geo in
+            let ids = isLeft ? config.leftWidgets : config.rightWidgets
+            let all = ids.compactMap { id in allWidgets.first { $0.id == id } }
+            let items = Self.fitting(all, in: geo.size.width - 36)
+            HStack(spacing: 0) {
+                ForEach(items.indices, id: \.self) { i in
+                    if i > 0 { Divider().frame(height: 36) }
+                    items[i].make()
+                        .environment(\.widgetScale,
+                                     CGFloat(config.textScale[items[i].id] ?? 1))
+                        .frame(maxWidth: .infinity)  // 每個 widget 等寬均分
+                        .contentShape(Rectangle())
+                        .onTapGesture { items[i].action?() }
+                }
             }
+            .panelChrome()
         }
-        .panelChrome()
+    }
+
+    // 等寬均分下，每格 ≥ 已納入者的最大 minWidth 才算塞得下；
+    // 窄螢幕（dock 在內建螢幕）只顯示前面塞得下的幾個，至少一個
+    static func fitting(_ all: [Widget], in width: CGFloat) -> [Widget] {
+        guard let first = all.first else { return [] }
+        var best = [first]
+        for n in 1...all.count {
+            let prefix = Array(all.prefix(n))
+            let maxMin = prefix.map(\.minWidth).max() ?? 0
+            if CGFloat(n) * maxMin <= width { best = prefix } else { break }
+        }
+        return best
     }
 }
 
@@ -621,10 +670,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ids = isLeft ? cfg.leftWidgets : cfg.rightWidgets
         for (i, id) in ids.enumerated() {
             guard let w = allWidgets.first(where: { $0.id == id }) else { continue }
-            let mi = NSMenuItem(title: "\(i + 1)  \(w.title)", action: nil, keyEquivalent: "")
+            let scale = cfg.textScale[id] ?? 1
+            let suffix = scale == 1 ? "" : String(format: "  ·  %.0f%%", scale * 100)
+            let mi = NSMenuItem(title: "\(i + 1)  \(w.title)\(suffix)",
+                                action: nil, keyEquivalent: "")
             let ops = NSMenu()
             for (opTitle, sel) in [("Move Up", #selector(moveWidgetUp(_:))),
                                    ("Move Down", #selector(moveWidgetDown(_:))),
+                                   ("Text Larger", #selector(textLarger(_:))),
+                                   ("Text Smaller", #selector(textSmaller(_:))),
                                    ("Remove", #selector(removeWidget(_:)))] {
                 let op = NSMenuItem(title: opTitle, action: sel, keyEquivalent: "")
                 op.target = self
@@ -691,6 +745,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mutateWidgets(sender) { moved($0, $1, by: 1) }
     }
 
+    private func bumpTextScale(_ sender: NSMenuItem, by delta: Double) {
+        guard let id = sender.representedObject as? String else { return }
+        let cfg = Config.shared
+        var t = cfg.textScale
+        t[id] = min(1.8, max(0.6, (t[id] ?? 1) + delta))
+        cfg.textScale = t
+        rebuildMenu()
+    }
+
+    @objc private func textLarger(_ sender: NSMenuItem) { bumpTextScale(sender, by: 0.1) }
+    @objc private func textSmaller(_ sender: NSMenuItem) { bumpTextScale(sender, by: -0.1) }
+
     @objc private func startPomodoro() { Pomodoro.shared.start(minutes: 25) }
     @objc private func stopPomodoro() { Pomodoro.shared.stop() }
 
@@ -739,14 +805,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let h = reserved - 4
         let cfg = Config.shared
         let retreat: CGFloat = hovering ? hoverRetreat : 0  // hover 時模仿 dock 放大讓位
+        // 外側貼齊螢幕邊（跟最大化視窗的邊對齊），只在 dock 側留 gap
         if cfg.leftEnabled {
-            place(leftPanel, zoneMinX: sf.minX + gap, zoneMaxX: dock.minX - gap - retreat,
+            place(leftPanel, zoneMinX: sf.minX, zoneMaxX: dock.minX - gap - retreat,
                   y: y, h: h)
         } else {
             leftPanel.orderOut(nil)
         }
         if cfg.rightEnabled {
-            place(rightPanel, zoneMinX: dock.maxX + gap + retreat, zoneMaxX: sf.maxX - gap,
+            place(rightPanel, zoneMinX: dock.maxX + gap + retreat, zoneMaxX: sf.maxX,
                   y: y, h: h)
         } else {
             rightPanel.orderOut(nil)
