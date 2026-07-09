@@ -1,5 +1,6 @@
 import AppKit
 import EventKit
+import ServiceManagement
 import SwiftUI
 
 // MARK: - Dock 偵測
@@ -432,6 +433,69 @@ struct NowPlayingView: View {
     }
 }
 
+// 遠端 herdr 的 agent 狀態看板。
+// ponytail: host 與 herdr 路徑寫死 omarchy-outside；要換機器改這裡
+struct HerdrView: View {
+    @Environment(\.widgetScale) private var ws
+    @State private var counts: [String: Int] = [:]
+    @State private var reachable = false
+    private let tick = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        Group {
+            if reachable {
+                let blocked = counts["blocked"] ?? 0
+                let working = counts["working"] ?? 0
+                let idle = (counts["idle"] ?? 0) + (counts["unknown"] ?? 0)
+                HStack(spacing: 6) {
+                    Text("🤖")
+                    if blocked > 0 {
+                        Text("⚠ \(blocked)").foregroundStyle(.red).fontWeight(.semibold)
+                    }
+                    if working > 0 {
+                        Text("⚙ \(working)").foregroundStyle(.cyan)
+                    }
+                    Text("\(idle) idle").foregroundStyle(.secondary)
+                }
+                .font(.system(size: 11 * ws).monospacedDigit())
+            } else {
+                Text("🤖 herdr —")
+                    .font(.system(size: 11 * ws))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { refresh() }
+        .onReceive(tick) { _ in refresh() }
+    }
+
+    private func refresh() {
+        DispatchQueue.global().async {
+            // ControlMaster 讓 10 秒一次的輪詢重用連線，不用每次重新握手
+            let cmd = "ssh -o BatchMode=yes -o ConnectTimeout=5 " +
+                "-o ControlMaster=auto -o ControlPath=/tmp/spacer-ssh-%r@%h " +
+                "-o ControlPersist=120 omarchy-outside " +
+                "'~/.local/bin/herdr agent list'"
+            guard let out = shell(cmd),
+                  let data = out.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let result = json["result"] as? [String: Any],
+                  let agents = result["agents"] as? [[String: Any]]
+            else {
+                DispatchQueue.main.async { reachable = false }
+                return
+            }
+            var c: [String: Int] = [:]
+            for a in agents {
+                c[a["agent_status"] as? String ?? "unknown", default: 0] += 1
+            }
+            DispatchQueue.main.async {
+                reachable = true
+                counts = c
+            }
+        }
+    }
+}
+
 struct PomodoroView: View {
     @Environment(\.widgetScale) private var ws
     @ObservedObject private var model = Pomodoro.shared
@@ -500,7 +564,48 @@ final class Config: ObservableObject {
 }
 
 func runDetached(_ cmd: String) {
-    DispatchQueue.global().async { _ = shell(cmd) }
+    DispatchQueue.global().async {
+        if shell(cmd) == nil { NSLog("Spacer action failed: %@", cmd) }
+    }
+}
+
+/// 點 herdr widget：已有 herdr 分頁 → 跳過去（用 terminal 前景 pid 認）；
+/// Ghostty 開著但沒 herdr 分頁 → 前景視窗開新分頁（沒視窗就開新視窗）；
+/// Ghostty 沒開 → 直接以 herdr 啟動
+func openHerdrInGhostty() {
+    let herdr = "\(NSHomeDirectory())/.local/bin/herdr --remote omarchy-outside"
+    runDetached("""
+    if [ "$(osascript -e 'application "Ghostty" is running')" != "true" ]; then
+    open -na Ghostty --args -e \(herdr)
+    exit 0
+    fi
+    pids=$(ps ax -o pid=,command= | awk '/[h]erdr --remote omarchy-outside/{printf ",%s", $1}')
+    HERDR="\(herdr)"
+    osascript <<APPLESCRIPT
+    tell application "Ghostty"
+    activate
+    set herdrPids to {${pids#,}}
+    repeat with w in windows
+    repeat with t in tabs of w
+    repeat with s in terminals of t
+    if herdrPids contains (pid of s) then
+    try
+    activate window w
+    end try
+    select tab t
+    return
+    end if
+    end repeat
+    end repeat
+    end repeat
+    try
+    new tab in front window with configuration {command:"$HERDR"}
+    on error
+    new window with configuration {command:"$HERDR"}
+    end try
+    end tell
+    APPLESCRIPT
+    """)
 }
 
 struct Widget {
@@ -530,6 +635,8 @@ let allWidgets: [Widget] = [
     Widget(id: "pomodoro", title: "Pomodoro", minWidth: 90, action: nil) {
         AnyView(PomodoroView())
     },
+    Widget(id: "herdr", title: "herdr Agents", minWidth: 140,
+           action: { openHerdrInGhostty() }) { AnyView(HerdrView()) },
 ]
 
 struct PanelView: View {
@@ -611,6 +718,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // 首次啟動自動註冊開機啟動；之後由選單的 Launch at Login 控制
+        if UserDefaults.standard.object(forKey: "didAutoRegisterLogin") == nil {
+            try? SMAppService.mainApp.register()
+            UserDefaults.standard.set(true, forKey: "didAutoRegisterLogin")
+        }
         leftPanel.contentView = FirstMouseHostingView(rootView: PanelView(isLeft: true))
         rightPanel.contentView = FirstMouseHostingView(rootView: PanelView(isLeft: false))
         setupStatusItem()
@@ -647,6 +759,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(sideItem(title: "Left Panel", isLeft: true))
         menu.addItem(sideItem(title: "Right Panel", isLeft: false))
         menu.addItem(.separator())
+        let login = NSMenuItem(title: "Launch at Login",
+                               action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        login.target = self
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
         menu.addItem(NSMenuItem(title: "Quit Spacer",
                                 action: #selector(NSApplication.terminate(_:)),
                                 keyEquivalent: "q"))
@@ -702,6 +819,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         item.submenu = sub
         return item
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let svc = SMAppService.mainApp
+        if svc.status == .enabled {
+            try? svc.unregister()
+        } else {
+            try? svc.register()
+        }
+        rebuildMenu()
     }
 
     @objc private func toggleSide(_ sender: NSMenuItem) {

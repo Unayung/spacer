@@ -6,6 +6,16 @@
 	<string>com.unayung.Spacer</string>
 	<key>CFBundleName</key>
 	<string>Spacer</string>
+	<key>CFBundleExecutable</key>
+	<string>Spacer</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>在 Ghostty 開新分頁執行 herdr</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>顯示今天接下來的行程</string>
 	<key>NSCalendarsUsageDescription</key>
