@@ -106,13 +106,14 @@ func shell(_ cmd: String) -> String? {
 final class Pomodoro: ObservableObject {
     static let shared = Pomodoro()
     @Published var endDate: Date?
+    @Published var total: Double = 0  // 這輪總秒數，給進度環用
     private var timer: Timer?
 
     func start(minutes: Int) {
-        endDate = Date().addingTimeInterval(Double(minutes) * 60)
+        total = Double(minutes) * 60
+        endDate = Date().addingTimeInterval(total)
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: Double(minutes) * 60,
-                                     repeats: false) { _ in
+        timer = Timer.scheduledTimer(withTimeInterval: total, repeats: false) { _ in
             NSSound(named: "Glass")?.play()
         }
     }
@@ -154,9 +155,10 @@ extension EnvironmentValues {
 
 extension View {
     @ViewBuilder
-    func panelChrome(glass: Bool = true, border: Bool = false) -> some View {
+    func panelChrome(glass: Bool = true, border: Bool = false,
+                     hPad: CGFloat = 12) -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
-        let base = padding(.horizontal, 18)
+        let base = padding(.horizontal, hPad)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         Group {
             if !glass {
@@ -177,20 +179,95 @@ extension View {
     }
 }
 
+// MARK: - 共用視覺語彙（讓所有 widget 讀起來像同一組儀表）
+
+extension Color {
+    static let hud = Color(red: 0.91, green: 0.73, blue: 0.33)       // 訊號琥珀（app 招牌色）
+    static let hudCool = Color(red: 0.44, green: 0.70, blue: 0.90)   // 下載冷藍
+    /// 負載色階：綠 → 琥珀 → 紅，跟招牌色和諧
+    static func load(_ v: Double) -> Color {
+        v > 0.8 ? Color(red: 0.90, green: 0.40, blue: 0.36)
+            : v > 0.5 ? .hud
+            : Color(red: 0.38, green: 0.82, blue: 0.55)
+    }
+}
+
+/// 微型大寫標籤——整組 widget 的共同語彙
+struct MicroLabel: View {
+    @Environment(\.widgetScale) private var ws
+    let text: String
+    var body: some View {
+        Text(text.uppercased())
+            .font(.system(size: 8.5 * ws, weight: .semibold))
+            .tracking(1.1)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+    }
+}
+
+/// 統一的細長膠囊儀表（CPU / RAM）
+struct Meter: View {
+    @Environment(\.widgetScale) private var ws
+    let value: Double
+    let tint: Color
+    var body: some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.primary.opacity(0.12))
+                Capsule().fill(tint)
+                    .frame(width: g.size.width * min(max(value, 0), 1))
+            }
+        }
+        .frame(height: 4 * ws)
+    }
+}
+
+/// 膠囊藥丸——計數類（github / herdr）
+struct Pill<Content: View>: View {
+    @Environment(\.widgetScale) private var ws
+    var tint: Color = .primary
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        content()
+            .padding(.horizontal, 8 * ws)
+            .padding(.vertical, 3 * ws)
+            .background(Capsule().fill(tint.opacity(0.16)))
+    }
+}
+
+/// 圖示 + 數值 + 微標籤 的小計數（放進 Pill 裡）
+struct CountItem: View {
+    @Environment(\.widgetScale) private var ws
+    let systemImage: String
+    let value: String
+    let label: String
+    var tint: Color = .primary
+    var body: some View {
+        HStack(spacing: 5 * ws) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10 * ws, weight: .semibold))
+                .foregroundStyle(tint)
+            Text(value)
+                .font(.system(size: 13 * ws, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+            MicroLabel(text: label)
+        }
+    }
+}
+
 struct ClockView: View {
     @Environment(\.widgetScale) private var ws
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { ctx in
-            VStack(spacing: 1) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(ctx.date, format: .dateTime.hour().minute())
                     .font(.system(size: 30 * ws, weight: .semibold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(LinearGradient(colors: [.cyan, .blue],
-                                                    startPoint: .top, endPoint: .bottom))
-                Text(ctx.date, format: .dateTime.month().day().weekday(.abbreviated))
-                    .font(.system(size: 11 * ws))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
+                MicroLabel(text: ctx.date.formatted(
+                    .dateTime.weekday(.abbreviated).month(.abbreviated).day()))
             }
         }
     }
@@ -205,11 +282,10 @@ struct StatsView: View {
     private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            row("CPU", value: cpu, label: "\(Int(cpu * 100))%")
-            row("RAM", value: memUsed / memTotal,
-                label: String(format: "%.0f / %.0f GB",
-                              memUsed / 1_073_741_824, memTotal / 1_073_741_824))
+        VStack(alignment: .leading, spacing: 9 * ws) {
+            row("cpu", "cpu", value: cpu, readout: "\(Int(cpu * 100))%")
+            row("memorychip", "ram", value: memUsed / memTotal,
+                readout: String(format: "%.1fG", memUsed / 1_073_741_824))
         }
         .onAppear { refresh() }
         .onReceive(tick) { _ in refresh() }
@@ -220,18 +296,20 @@ struct StatsView: View {
         memUsed = memoryUsedBytes()
     }
 
-    private func row(_ title: String, value: Double, label: String) -> some View {
-        HStack(spacing: 8) {
-            Text(title)
+    private func row(_ icon: String, _ label: String,
+                     value: Double, readout: String) -> some View {
+        HStack(spacing: 8 * ws) {
+            Image(systemName: icon)
                 .font(.system(size: 10 * ws, weight: .semibold))
-                .frame(width: 34 * ws, alignment: .leading)
-            ProgressView(value: min(max(value, 0), 1))
-                .progressViewStyle(.linear)
-                .tint(value > 0.8 ? .red : value > 0.5 ? .orange : .green)
-                .frame(width: 120)
-            Text(label)
-                .font(.system(size: 10 * ws).monospacedDigit())
                 .foregroundStyle(.secondary)
+                .frame(width: 15 * ws)
+            MicroLabel(text: label).frame(width: 28 * ws, alignment: .leading)
+            Meter(value: value, tint: .load(value)).frame(width: 96 * ws)
+            Text(readout)
+                .font(.system(size: 11 * ws, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.load(value))
+                .frame(width: 40 * ws, alignment: .trailing)
         }
     }
 }
@@ -243,82 +321,145 @@ struct NetView: View {
     private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("↓ " + fmt(rates.rx))
-                .foregroundStyle(.green)
-            Text("↑ " + fmt(rates.tx))
-                .foregroundStyle(.orange)
+        VStack(alignment: .leading, spacing: 8 * ws) {
+            row("arrow.down", rates.rx, tint: .hudCool)
+            row("arrow.up", rates.tx, tint: .hud)
         }
-        .font(.system(size: 10 * ws).monospacedDigit())
         .onAppear { rates = sampler.rates(interval: 2) }
         .onReceive(tick) { _ in rates = sampler.rates(interval: 2) }
     }
 
-    private func fmt(_ b: Double) -> String {
-        b >= 1_048_576 ? String(format: "%.1f MB/s", b / 1_048_576)
-                       : String(format: "%.0f KB/s", b / 1024)
+    private func row(_ icon: String, _ bytes: Double, tint: Color) -> some View {
+        let (num, unit) = parts(bytes)
+        return HStack(spacing: 6 * ws) {
+            Image(systemName: icon)
+                .font(.system(size: 9 * ws, weight: .bold))
+                .foregroundStyle(tint)
+            Text(num)
+                .font(.system(size: 13 * ws, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+            MicroLabel(text: unit)
+        }
+    }
+
+    private func parts(_ b: Double) -> (String, String) {
+        b >= 1_048_576 ? (String(format: "%.1f", b / 1_048_576), "MB/s")
+                       : (String(format: "%.0f", b / 1024), "KB/s")
     }
 }
 
 struct GitHubView: View {
     @Environment(\.widgetScale) private var ws
-    @State private var text = "GH …"
+    @State private var prs: String?
+    @State private var reviews: String?
+    @State private var reachable = true
     private let tick = Timer.publish(every: 300, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 12 * ws).monospacedDigit())
-            .foregroundStyle(.purple)
-            .onAppear { refresh() }
-            .onReceive(tick) { _ in refresh() }
+        Group {
+            if reachable {
+                HStack(spacing: 8 * ws) {
+                    Pill(tint: .hud) {
+                        CountItem(systemImage: "arrow.triangle.branch",
+                                  value: prs ?? "–", label: "prs", tint: .hud)
+                    }
+                    Pill(tint: .secondary) {
+                        CountItem(systemImage: "eye",
+                                  value: reviews ?? "–", label: "review")
+                    }
+                }
+            } else {
+                HStack(spacing: 5 * ws) {
+                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    MicroLabel(text: "GitHub —")
+                }
+                .foregroundStyle(.secondary)
+                .font(.system(size: 11 * ws))
+            }
+        }
+        .onAppear { refresh() }
+        .onReceive(tick) { _ in refresh() }
     }
 
     private func refresh() {
         DispatchQueue.global().async {
-            let prs = shell("gh search prs --author=@me --state=open --json number --jq length")
-            let reviews = shell(
+            let p = shell("gh search prs --author=@me --state=open --json number --jq length")
+            let r = shell(
                 "gh search prs --review-requested=@me --state=open --json number --jq length")
-            let s = (prs == nil && reviews == nil)
-                ? "GH —"
-                : "⑂ \(prs ?? "?") PRs · \(reviews ?? "?") reviews"
-            DispatchQueue.main.async { text = s }
+            DispatchQueue.main.async {
+                reachable = !(p == nil && r == nil)
+                prs = p; reviews = r
+            }
         }
     }
 }
 
+struct CalEvent: Identifiable {
+    let id = UUID()
+    let time: String
+    let title: String
+}
+
 struct CalendarView: View {
     @Environment(\.widgetScale) private var ws
-    @State private var text = "📅 行事曆…"
+    @State private var events: [CalEvent] = []
+    @State private var status = "…"  // 空/未授權時的提示
     @State private var store = EKEventStore()
     private let tick = Timer.publish(every: 300, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 12 * ws))
-            .onAppear { refresh() }
-            .onReceive(tick) { _ in refresh() }
+        Group {
+            if events.isEmpty {
+                HStack(spacing: 6 * ws) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 10 * ws, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    MicroLabel(text: status)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 5 * ws) {
+                    ForEach(events) { e in
+                        HStack(spacing: 7 * ws) {
+                            Text(e.time)
+                                .font(.system(size: 10 * ws, weight: .semibold,
+                                              design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.hud)
+                                .frame(width: 44 * ws, alignment: .leading)
+                            Text(e.title)
+                                .font(.system(size: 11 * ws))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { refresh() }
+        .onReceive(tick) { _ in refresh() }
     }
 
     private func refresh() {
         store.requestFullAccessToEvents { granted, _ in
             guard granted else {
-                DispatchQueue.main.async { text = "📅 行事曆未授權" }
+                DispatchQueue.main.async { events = []; status = "no access" }
                 return
             }
             let now = Date()
             let endOfDay = Calendar.current.startOfDay(for: now).addingTimeInterval(86400)
             let predicate = store.predicateForEvents(withStart: now, end: endOfDay,
                                                      calendars: nil)
-            let events = store.events(matching: predicate)
+            let list = store.events(matching: predicate)
                 .filter { !$0.isAllDay }
                 .sorted { $0.startDate < $1.startDate }
-                .prefix(2)
-            let s = events.isEmpty
-                ? "📅 今天沒有行程了"
-                : events.map {
-                    "📅 \($0.startDate.formatted(date: .omitted, time: .shortened)) \($0.title ?? "")"
-                }.joined(separator: "\n")
-            DispatchQueue.main.async { text = s }
+                .prefix(3)
+                .map { CalEvent(
+                    time: $0.startDate.formatted(date: .omitted, time: .shortened),
+                    title: $0.title ?? "") }
+            DispatchQueue.main.async {
+                events = Array(list)
+                status = "all clear today"
+            }
         }
     }
 }
@@ -480,9 +621,11 @@ struct HerdrView: View {
                     board(working: 0, blocked: 0, idle: idle, t: 0)
                 }
             } else {
-                Text("🤖 herdr —")
-                    .font(.system(size: 11 * ws))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 5 * ws) {
+                    Image(systemName: "cpu").font(.system(size: 10 * ws, weight: .semibold))
+                    MicroLabel(text: "herdr —")
+                }
+                .foregroundStyle(.secondary)
             }
         }
         .onAppear { refresh() }
@@ -491,37 +634,33 @@ struct HerdrView: View {
 
     private func board(working: Int, blocked: Int, idle: Int, t: Double) -> some View {
         HStack(spacing: 8 * ws) {
-            Text("🤖").font(.system(size: 13 * ws))
             if blocked > 0 {
                 // 等你回覆的 agent：紅色呼吸閃爍
-                pill(.red, opacity: 0.55 + 0.45 * sin(t * 5)) {
-                    Text("⚠ \(blocked)")
+                Pill(tint: .load(1)) {
+                    CountItem(systemImage: "exclamationmark.triangle.fill",
+                              value: "\(blocked)", label: "blocked", tint: .load(1))
                 }
+                .opacity(0.55 + 0.45 * sin(t * 5))
             }
             if working > 0 {
-                pill(.cyan) {
-                    HStack(spacing: 3) {
+                Pill(tint: .hud) {
+                    HStack(spacing: 5 * ws) {
                         Image(systemName: "gearshape.fill")
-                            .font(.system(size: 9 * ws, weight: .bold))
+                            .font(.system(size: 10 * ws, weight: .bold))
+                            .foregroundStyle(Color.hud)
                             .rotationEffect(.degrees(
                                 (t * 120).truncatingRemainder(dividingBy: 360)))
                         Text("\(working)")
+                            .font(.system(size: 13 * ws, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                        MicroLabel(text: "run")
                     }
                 }
             }
-            pill(.gray) { Text("\(idle) idle") }
+            Pill(tint: .secondary) {
+                CountItem(systemImage: "moon.zzz", value: "\(idle)", label: "idle")
+            }
         }
-    }
-
-    private func pill<Content: View>(_ color: Color, opacity: Double = 1,
-                                     @ViewBuilder content: () -> Content) -> some View {
-        content()
-            .font(.system(size: 10 * ws, weight: .semibold).monospacedDigit())
-            .foregroundStyle(color)
-            .padding(.horizontal, 8 * ws)
-            .padding(.vertical, 3 * ws)
-            .background(Capsule().fill(color.opacity(0.16)))
-            .opacity(opacity)
     }
 
     private func refresh() {
@@ -558,25 +697,32 @@ struct PomodoroView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { ctx in
-            Group {
-                if let end = model.endDate {
-                    let remain = Int(end.timeIntervalSince(ctx.date))
-                    if remain <= 0 {
-                        Text("🍅 Done!")
-                            .font(.system(size: 20 * ws, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.red)
-                    } else {
-                        Text(String(format: "🍅 %d:%02d", remain / 60, remain % 60))
-                            .font(.system(size: 20 * ws, weight: .medium, design: .rounded))
+            let remain = model.endDate.map { $0.timeIntervalSince(ctx.date) } ?? 0
+            let running = model.endDate != nil && remain > 0
+            let done = model.endDate != nil && remain <= 0
+            let progress = model.total > 0 ? max(0, min(1, remain / model.total)) : 0
+            ZStack {
+                Circle()
+                    .stroke(.primary.opacity(0.14), lineWidth: 3 * ws)
+                Circle()
+                    .trim(from: 0, to: running ? progress : (done ? 1 : 0))
+                    .stroke(done ? Color.load(1) : .hud,
+                            style: StrokeStyle(lineWidth: 3 * ws, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                VStack(spacing: 1) {
+                    if running {
+                        Text(String(format: "%d:%02d", Int(remain) / 60, Int(remain) % 60))
+                            .font(.system(size: 13 * ws, weight: .semibold, design: .rounded))
                             .monospacedDigit()
-                            .foregroundStyle(.orange)
+                    } else {
+                        Image(systemName: done ? "checkmark" : "timer")
+                            .font(.system(size: 13 * ws, weight: .semibold))
+                            .foregroundStyle(done ? Color.load(1) : Color(nsColor: .secondaryLabelColor))
                     }
-                } else {
-                    Text("🍅 —")
-                        .font(.system(size: 13 * ws))
-                        .foregroundStyle(.secondary)
+                    MicroLabel(text: done ? "done" : "focus")
                 }
             }
+            .frame(width: 46 * ws, height: 46 * ws)
             .contentShape(Rectangle())
             .onTapGesture {
                 model.endDate == nil ? model.start(minutes: 25) : model.stop()
@@ -767,40 +913,65 @@ struct PanelView: View {
         GeometryReader { geo in
             let ids = config.widgets(side)
             let all = ids.compactMap { id in allWidgets.first { $0.id == id } }
-            let items = Self.fitting(all, in: geo.size.width - 36)
-            HStack(spacing: 0) {
-                ForEach(items.indices, id: \.self) { i in
-                    if i > 0 { Divider().frame(height: 36) }
-                    items[i].make()
-                        .environment(\.widgetScale,
-                                     CGFloat(config.textScale[items[i].id] ?? 1))
-                        .frame(maxWidth: .infinity)  // 每個 widget 等寬均分
-                        .contentShape(Rectangle())
-                        .onTapGesture { items[i].action?() }
-                        .contextMenu {
-                            Button("← Move Left") { reorder(items[i].id, by: -1) }
-                            Button("Move Right →") { reorder(items[i].id, by: 1) }
-                            Divider()
-                            Button("Text Larger") {
-                                config.bumpScale(items[i].id, by: 0.1)
+            Group {
+                if side == "float" {
+                    // 每格固定 200 + 1px 分隔線，全部顯示（面板寬度已配合）
+                    HStack(spacing: 0) {
+                        ForEach(all.indices, id: \.self) { i in
+                            if i > 0 {
+                                Rectangle().fill(.primary.opacity(0.15))
+                                    .frame(width: FloatingPanel.separator, height: 40)
                             }
-                            Button("Text Smaller") {
-                                config.bumpScale(items[i].id, by: -0.1)
-                            }
-                            Divider()
-                            let inactive = allWidgets.filter { !ids.contains($0.id) }
-                            if !inactive.isEmpty {
-                                Menu("Add Widget") {
-                                    ForEach(inactive, id: \.id) { w in
-                                        Button(w.title) { add(w.id) }
-                                    }
-                                }
-                            }
-                            Button("Remove") { remove(items[i].id) }
+                            cell(all[i], ids: ids, fixedWidth: FloatingPanel.widgetWidth)
                         }
+                    }
+                } else {
+                    // dock 兩側：塞得下幾個由 fitting 決定，每格最寬 250，整排置中
+                    let items = Self.fitting(all, in: geo.size.width - 24)
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        ForEach(items.indices, id: \.self) { i in
+                            if i > 0 { Divider().frame(height: 36) }
+                            cell(items[i], ids: ids, fixedWidth: nil)
+                        }
+                        Spacer(minLength: 0)
+                    }
                 }
             }
-            .panelChrome(glass: config.glass, border: config.border)
+            .panelChrome(glass: config.glass, border: config.border,
+                         hPad: side == "float" ? 0 : 12)
+        }
+    }
+
+    @ViewBuilder
+    private func cell(_ w: Widget, ids: [String], fixedWidth: CGFloat?) -> some View {
+        let base = w.make()
+            .environment(\.widgetScale, CGFloat(config.textScale[w.id] ?? 1))
+        Group {
+            if let fw = fixedWidth {
+                base.frame(width: fw)
+            } else {
+                base.frame(maxWidth: 250)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { w.action?() }
+        .contextMenu {
+            Button("← Move Left") { reorder(w.id, by: -1) }
+            Button("Move Right →") { reorder(w.id, by: 1) }
+            Divider()
+            Button("Text Larger") { config.bumpScale(w.id, by: 0.1) }
+            Button("Text Smaller") { config.bumpScale(w.id, by: -0.1) }
+            Divider()
+            let inactive = allWidgets.filter { !ids.contains($0.id) }
+            if !inactive.isEmpty {
+                Menu("Add Widget") {
+                    ForEach(inactive, id: \.id) { ww in
+                        Button(ww.title) { add(ww.id) }
+                    }
+                }
+            }
+            Button("Remove") { remove(w.id) }
         }
     }
 
@@ -850,13 +1021,21 @@ final class SpacerPanel: NSPanel {
     }
 }
 
-/// 可拖曳、可水平縮放的浮動面板：位置與寬度由使用者決定，不參與 dock 排版。
+/// 可拖曳的浮動面板：只移動，不縮放。寬度由 widget 數決定（每格固定 200）。
 final class FloatingPanel: NSPanel {
     static let panelHeight: CGFloat = 72
+    static let widgetWidth: CGFloat = 200
+    static let separator: CGFloat = 1
+
+    /// n 個 widget 該有的面板寬度：200*n + 分隔線(n-1)
+    static func width(for count: Int) -> CGFloat {
+        let n = max(1, count)
+        return CGFloat(n) * widgetWidth + CGFloat(n - 1) * separator
+    }
 
     init() {
         super.init(contentRect: .zero,
-                   styleMask: [.borderless, .nonactivatingPanel, .resizable],
+                   styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         level = .floating
         collectionBehavior = [.canJoinAllSpaces, .ignoresCycle]
@@ -865,64 +1044,6 @@ final class FloatingPanel: NSPanel {
         hasShadow = true
         isMovableByWindowBackground = true  // 拖背景即可移動
         ignoresMouseEvents = false
-        minSize = NSSize(width: 120, height: Self.panelHeight)
-        maxSize = NSSize(width: 4000, height: Self.panelHeight)
-    }
-}
-
-/// 浮動面板左右邊緣的縮放握把。mouseDownCanMoveWindow=false 讓它「不」觸發背景拖移，
-/// 自己用 mouseDragged 改視窗寬度（左握把移左緣、右握把移右緣）。
-final class ResizeHandleView: NSView {
-    enum Edge { case left, right }
-    let edge: Edge
-    static let width: CGFloat = 12
-
-    init(edge: Edge) {
-        self.edge = edge
-        super.init(frame: .zero)
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    override var mouseDownCanMoveWindow: Bool { false }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .resizeLeftRight)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let win = window else { return }
-        let mx = NSEvent.mouseLocation.x  // 螢幕座標，跟 window.frame 同一系
-        var f = win.frame
-        if edge == .right {
-            f.size.width = min(win.maxSize.width, max(win.minSize.width, mx - f.minX))
-        } else {
-            let maxX = f.maxX
-            let minX = min(maxX - win.minSize.width, max(maxX - win.maxSize.width, mx))
-            f.origin.x = minX
-            f.size.width = maxX - minX
-        }
-        win.setFrame(f, display: true)
-    }
-
-    override func draw(_ rect: NSRect) {
-        // 中央畫一條淡淡的直條，讓使用者看得到可以拖
-        let bar = NSRect(x: bounds.midX - 1.5, y: bounds.midY - 11, width: 3, height: 22)
-        NSColor.secondaryLabelColor.withAlphaComponent(0.5).setFill()
-        NSBezierPath(roundedRect: bar, xRadius: 1.5, yRadius: 1.5).fill()
-    }
-}
-
-/// 浮動面板容器：glass hosting view 鋪滿，握把疊在左右緣。
-/// hitTest 強制邊緣點擊落到握把（否則 SwiftUI host 會先吃掉、變成移動視窗）。
-final class FloatContainer: NSView {
-    var leftHandle: ResizeHandleView?
-    var rightHandle: ResizeHandleView?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let local = convert(point, from: superview)
-        if let l = leftHandle, l.frame.contains(local) { return l }
-        if let r = rightHandle, r.frame.contains(local) { return r }
-        return super.hitTest(point)
     }
 }
 
@@ -1141,35 +1262,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func startPomodoro() { Pomodoro.shared.start(minutes: 25) }
     @objc private func stopPomodoro() { Pomodoro.shared.stop() }
 
-    // 容器 = [glass hosting view 鋪滿] + [左右縮放握把疊在邊緣]，autoresizing 跟著寬度走
     private func setupFloatContent() {
-        let container = FloatContainer(frame: NSRect(origin: .zero,
-                                                     size: Config.shared.floatFrame.size))
-        let host = FirstMouseHostingView(rootView: PanelView(side: "float"))
-        host.frame = container.bounds
-        host.autoresizingMask = [.width, .height]
-        container.addSubview(host)
-        let hw = ResizeHandleView.width
-        let left = ResizeHandleView(edge: .left)
-        left.frame = NSRect(x: 0, y: 0, width: hw, height: container.bounds.height)
-        left.autoresizingMask = [.height, .maxXMargin]
-        let right = ResizeHandleView(edge: .right)
-        right.frame = NSRect(x: container.bounds.width - hw, y: 0,
-                             width: hw, height: container.bounds.height)
-        right.autoresizingMask = [.minXMargin, .height]
-        container.addSubview(left)
-        container.addSubview(right)
-        container.leftHandle = left
-        container.rightHandle = right
-        floatPanel.contentView = container
+        floatPanel.contentView = FirstMouseHostingView(rootView: PanelView(side: "float"))
     }
 
     private func updateFloatPanel() {
         let cfg = Config.shared
         guard cfg.floatEnabled else { floatPanel.orderOut(nil); return }
-        if floatPanel.frame != cfg.floatFrame {
+        // 寬度全由 widget 數決定：每格 200 + 分隔線，加 widget 立刻變寬
+        var frame = cfg.floatFrame
+        frame.size.width = FloatingPanel.width(for: cfg.floatWidgets.count)
+        frame.size.height = FloatingPanel.panelHeight
+        if frame != cfg.floatFrame { cfg.floatFrame = frame; return }  // 存回，watcher 再進來
+        if floatPanel.frame != frame {
             restoringFloat = true
-            floatPanel.setFrame(cfg.floatFrame, display: true)
+            floatPanel.setFrame(frame, display: true)
             restoringFloat = false
         }
         floatPanel.orderFrontRegardless()
