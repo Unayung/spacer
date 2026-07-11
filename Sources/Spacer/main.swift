@@ -667,6 +667,114 @@ struct HerdrView: View {
     }
 }
 
+// 讀 dock 圖示上的紅點徽章（Spark / LINE / Slack …）。需要「輔助使用」權限。
+struct UnreadView: View {
+    @Environment(\.widgetScale) private var ws
+    @State private var badges: [String: String] = [:]
+    @State private var trusted = AXIsProcessTrusted()
+    private let tick = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+    // (dock 標題, 微標籤, SF Symbol)
+    private let apps: [(name: String, label: String, icon: String)] = [
+        ("Spark", "mail", "envelope.fill"),
+        ("LINE", "line", "bubble.left.fill"),
+        ("Slack", "slack", "number"),
+    ]
+
+    var body: some View {
+        Group {
+            if !trusted {
+                hint("lock.fill", "grant access") { requestAccess() }
+            } else {
+                let active = apps.filter { !(badges[$0.name] ?? "").isEmpty }
+                if active.isEmpty {
+                    hint("bell", "no unread", nil)
+                } else {
+                    HStack(spacing: 8 * ws) {
+                        ForEach(active, id: \.name) { app in
+                            Pill(tint: .hud) {
+                                HStack(spacing: 5 * ws) {
+                                    Image(systemName: app.icon)
+                                        .font(.system(size: 10 * ws, weight: .semibold))
+                                        .foregroundStyle(Color.hud)
+                                    badgeValue(badges[app.name] ?? "")
+                                    MicroLabel(text: app.label)
+                                }
+                            }
+                            .contentShape(Capsule())
+                            .onTapGesture { runDetached("open -a '\(app.name)'") }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { refresh() }
+        .onReceive(tick) { _ in refresh() }
+    }
+
+    private func hint(_ icon: String, _ text: String,
+                      _ tap: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 5 * ws) {
+            Image(systemName: icon).font(.system(size: 10 * ws, weight: .semibold))
+            MicroLabel(text: text)
+        }
+        .foregroundStyle(.secondary)
+        .contentShape(Rectangle())
+        .onTapGesture { tap?() }
+    }
+
+    @ViewBuilder private func badgeValue(_ s: String) -> some View {
+        if Int(s) != nil {
+            Text(s).font(.system(size: 13 * ws, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+        } else {  // Slack 的 "•" 之類：只有紅點沒數字
+            Image(systemName: "circle.fill").font(.system(size: 6 * ws))
+                .foregroundStyle(Color.hud)
+        }
+    }
+
+    private func refresh() {
+        trusted = AXIsProcessTrusted()
+        guard trusted else { return }
+        DispatchQueue.global().async {
+            let b = Self.dockBadges()
+            DispatchQueue.main.async { badges = b }
+        }
+    }
+
+    private func requestAccess() {
+        _ = AXIsProcessTrustedWithOptions(
+            ["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+    }
+
+    // 走訪 Dock 的 AX 樹，回傳 app 名 → 徽章文字
+    static func dockBadges() -> [String: String] {
+        guard let dock = NSRunningApplication
+            .runningApplications(withBundleIdentifier: "com.apple.dock").first
+        else { return [:] }
+        let ax = AXUIElementCreateApplication(dock.processIdentifier)
+        func children(_ e: AXUIElement) -> [AXUIElement] {
+            var r: CFTypeRef?
+            AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &r)
+            return (r as? [AXUIElement]) ?? []
+        }
+        func str(_ e: AXUIElement, _ a: String) -> String? {
+            var r: CFTypeRef?
+            AXUIElementCopyAttributeValue(e, a as CFString, &r)
+            return r as? String
+        }
+        var out: [String: String] = [:]
+        for list in children(ax) {
+            for item in children(list) {
+                if let t = str(item, kAXTitleAttribute as String),
+                   let b = str(item, "AXStatusLabel") {
+                    out[t] = b
+                }
+            }
+        }
+        return out
+    }
+}
+
 struct PomodoroView: View {
     @Environment(\.widgetScale) private var ws
     @ObservedObject private var model = Pomodoro.shared
@@ -872,6 +980,8 @@ let allWidgets: [Widget] = [
     },
     Widget(id: "herdr", title: "herdr Agents", minWidth: 140,
            action: { openHerdrInGhostty() }) { AnyView(HerdrView()) },
+    Widget(id: "unread", title: "Unread", minWidth: 200,
+           action: nil) { AnyView(UnreadView()) },
 ]
 
 struct PanelView: View {

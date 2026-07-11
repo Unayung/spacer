@@ -42,6 +42,7 @@ swift run          # 直接跑，不需要任何憑證
 | Calendar | 今天接下來幾個行程 | Calendar.app | 行事曆授權 |
 | Pomodoro | 倒數進度環 | 點一下開始／停止 25 分鐘 | — |
 | herdr Agents | 遠端 agent 狀態（working／blocked／idle） | 跳到既有 Ghostty 分頁或新開一個 | `ssh` + 遠端 herdr；需設 `herdrHost` |
+| Unread | Spark／LINE／Slack 的 dock 紅點徽章 | 開對應 app | 輔助使用權限 |
 
 所有 widget 共用一組「儀表」視覺語彙：圓體等寬數字 + 微型大寫標籤 + 琥珀 HUD 色。
 
@@ -54,6 +55,8 @@ Glass Background ・ Panel Border ・ Launch at Login ・ Quit。
 
 - **Calendar**：EventKit，第一次點 Calendar widget 會要授權。
 - **Apple Events**：herdr widget 用 AppleScript 操作 Ghostty 開分頁，第一次會要授權。
+- **輔助使用（Accessibility）**：Unread widget 讀 dock 徽章要用；沒授權會顯示 `grant access`，
+  點一下會跳系統提示，或到 System Settings → Privacy & Security → Accessibility 開 Spacer。
 - 選用 CLI：`gh`（GitHub）、`media-control`（Now Playing）、`ssh`＋遠端 `herdr`（herdr widget）。
   沒裝的 widget 會顯示 `—`，不影響其他 widget。
 - **herdr 主機**：herdr widget 要連的 ssh host 沒寫死，用
