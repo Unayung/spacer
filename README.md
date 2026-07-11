@@ -1,6 +1,7 @@
 # Spacer
 
 桌面上的浮動玻璃面板，放你想看的小工具（widget），想擺哪就擺哪。
+
 可以開很多塊、各自放不同 widget；拖到 dock 兩側死角再釘住，就變回「dock 旁的資訊條」。
 
 ![Spacer](docs/screenshot.png)
