@@ -569,8 +569,9 @@ struct NowPlayingView: View {
 }
 
 // herdr widget 連的遠端主機（ssh host alias）。空字串 = 未設定。
-// 設定：`defaults write com.unayung.Spacer herdrHost <你的-ssh-host>`
-let herdrHost = UserDefaults.standard.string(forKey: "herdrHost") ?? ""
+// 從選單「Set herdr Host…」設定，或 `defaults write com.unayung.Spacer herdrHost <host>`。
+// computed：每次讀 UserDefaults，改了下次輪詢就生效。
+var herdrHost: String { UserDefaults.standard.string(forKey: "herdrHost") ?? "" }
 
 // 遠端 herdr 的 agent 狀態看板（ssh 到 herdrHost 跑 `herdr agent list`）。
 struct HerdrView: View {
@@ -1076,10 +1077,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
+        let hh = NSMenuItem(title: "Set herdr Host…",
+                            action: #selector(setHerdrHost), keyEquivalent: "")
+        hh.target = self
+        menu.addItem(hh)
         menu.addItem(NSMenuItem(title: "Quit Spacer",
                                 action: #selector(NSApplication.terminate(_:)),
                                 keyEquivalent: "q"))
         statusItem?.menu = menu
+    }
+
+    @objc private func setHerdrHost() {
+        let alert = NSAlert()
+        alert.messageText = "herdr Host"
+        alert.informativeText = "herdr Agents widget 要連的 SSH host（~/.ssh/config 的別名）。留空停用。"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = herdrHost
+        field.placeholderString = "e.g. my-remote"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)  // accessory app 要主動叫視窗到前面
+        alert.window.makeFirstResponder(field)
+        if alert.runModal() == .alertFirstButtonReturn {
+            UserDefaults.standard.set(
+                field.stringValue.trimmingCharacters(in: .whitespaces), forKey: "herdrHost")
+        }
     }
 
     private func panelItem(_ p: PanelConfig, index: Int) -> NSMenuItem {
