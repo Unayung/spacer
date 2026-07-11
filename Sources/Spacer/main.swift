@@ -4,35 +4,6 @@ import EventKit
 import ServiceManagement
 import SwiftUI
 
-// MARK: - Dock 偵測
-// 零權限做法：HIServices 私有 API CoreDockGetRect，直接回報 dock 真實 rect。
-// macOS 26 起 CGWindowList 回報的 Dock 視窗變成全螢幕大小，舊的 bounds 過濾法失效。
-// ponytail: 只支援 dock 在底部；dock 在左右側時面板直接隱藏，需要再加。
-
-// 回傳值不可靠（實際簽名是 void），只能用 rect 本身判斷成功與否
-private let coreDockGetRect: (@convention(c) (UnsafeMutablePointer<CGRect>) -> Void)? = {
-    dlopen("/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/HIServices",
-           RTLD_LAZY)
-    guard let sym = dlsym(dlopen(nil, RTLD_LAZY), "CoreDockGetRect") else { return nil }
-    return unsafeBitCast(
-        sym, to: (@convention(c) (UnsafeMutablePointer<CGRect>) -> Void).self)
-}()
-
-/// dock 的 AppKit 座標 frame 與它所在的螢幕（dock 可能在任一螢幕）
-func dockFrameAndScreen() -> (NSRect, NSScreen)? {
-    guard let primary = NSScreen.screens.first, let fn = coreDockGetRect else { return nil }
-    var cg = CGRect.zero
-    fn(&cg)
-    guard cg.width > 0, cg.height > 0 else { return nil }
-    // CG 全域座標（主螢幕左上原點、y 向下）→ AppKit（主螢幕左下原點、y 向上）
-    let rect = NSRect(x: cg.minX, y: primary.frame.height - cg.maxY,
-                      width: cg.width, height: cg.height)
-    guard let screen = NSScreen.screens.first(where: {
-        $0.frame.contains(NSPoint(x: rect.midX, y: rect.midY))
-    }) else { return nil }
-    return (rect, screen)
-}
-
 // MARK: - 系統數據
 
 final class CPUSampler {
@@ -741,58 +712,55 @@ final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
 
 // MARK: - 設定（widget 分配到哪側、面板開關），存 UserDefaults
 
+/// 一塊浮動面板：自己的 widget 清單、位置、是否釘住。
+struct PanelConfig: Codable, Identifiable {
+    var id: String
+    var widgets: [String]
+    var x: Double
+    var y: Double
+    var pinned: Bool
+}
+
 final class Config: ObservableObject {
     static let shared = Config()
     private let d = UserDefaults.standard
-    @Published var leftEnabled: Bool { didSet { d.set(leftEnabled, forKey: "leftEnabled") } }
-    @Published var rightEnabled: Bool { didSet { d.set(rightEnabled, forKey: "rightEnabled") } }
-    // 順序即顯示順序
-    @Published var leftWidgets: [String] {
-        didSet { d.set(leftWidgets, forKey: "leftWidgets") }
-    }
-    @Published var rightWidgets: [String] {
-        didSet { d.set(rightWidgets, forKey: "rightWidgets") }
-    }
-    // 第三塊可拖曳的浮動面板
-    @Published var floatEnabled: Bool { didSet { d.set(floatEnabled, forKey: "floatEnabled") } }
-    @Published var floatWidgets: [String] {
-        didSet { d.set(floatWidgets, forKey: "floatWidgets") }
-    }
-    @Published var floatFrame: NSRect {
+
+    @Published var panels: [PanelConfig] {
         didSet {
-            d.set([floatFrame.minX, floatFrame.minY, floatFrame.width, floatFrame.height],
-                  forKey: "floatFrame")
-        }
-    }
-    // side: "left" / "right" / "float" 的統一存取
-    func widgets(_ side: String) -> [String] {
-        side == "left" ? leftWidgets : side == "right" ? rightWidgets : floatWidgets
-    }
-    func setWidgets(_ side: String, _ v: [String]) {
-        switch side {
-        case "left": leftWidgets = v
-        case "right": rightWidgets = v
-        default: floatWidgets = v
-        }
-    }
-    func enabled(_ side: String) -> Bool {
-        side == "left" ? leftEnabled : side == "right" ? rightEnabled : floatEnabled
-    }
-    func setEnabled(_ side: String, _ v: Bool) {
-        switch side {
-        case "left": leftEnabled = v
-        case "right": rightEnabled = v
-        default: floatEnabled = v
+            if let data = try? JSONEncoder().encode(panels) { d.set(data, forKey: "panels") }
         }
     }
     // widget id → 文字縮放倍率（1 = 原始大小）
     @Published var textScale: [String: Double] {
         didSet { d.set(textScale, forKey: "textScale") }
     }
-    // 面板玻璃背景開關
     @Published var glass: Bool { didSet { d.set(glass, forKey: "glass") } }
-    // 面板外框線開關
     @Published var border: Bool { didSet { d.set(border, forKey: "border") } }
+
+    func widgets(_ panelID: String) -> [String] {
+        panels.first { $0.id == panelID }?.widgets ?? []
+    }
+    func setWidgets(_ panelID: String, _ v: [String]) {
+        guard let i = panels.firstIndex(where: { $0.id == panelID }) else { return }
+        panels[i].widgets = v
+    }
+    func setPosition(_ panelID: String, x: Double, y: Double) {
+        guard let i = panels.firstIndex(where: { $0.id == panelID }) else { return }
+        panels[i].x = x; panels[i].y = y
+    }
+    func togglePin(_ panelID: String) {
+        guard let i = panels.firstIndex(where: { $0.id == panelID }) else { return }
+        panels[i].pinned.toggle()
+    }
+    func addPanel() {
+        // 每塊稍微錯開，才不會疊在一起
+        let off = Double(panels.count) * 24
+        panels.append(PanelConfig(id: UUID().uuidString, widgets: ["clock"],
+                                  x: 300 + off, y: 400 - off, pinned: false))
+    }
+    func removePanel(_ panelID: String) {
+        panels.removeAll { $0.id == panelID }
+    }
 
     func bumpScale(_ id: String, by delta: Double) {
         var t = textScale
@@ -801,17 +769,12 @@ final class Config: ObservableObject {
     }
 
     private init() {
-        leftEnabled = d.object(forKey: "leftEnabled") as? Bool ?? true
-        rightEnabled = d.object(forKey: "rightEnabled") as? Bool ?? true
-        leftWidgets = d.stringArray(forKey: "leftWidgets") ?? ["calendar", "pomodoro"]
-        rightWidgets = d.stringArray(forKey: "rightWidgets")
-            ?? ["stats", "net", "github", "clock"]
-        floatEnabled = d.object(forKey: "floatEnabled") as? Bool ?? false
-        floatWidgets = d.stringArray(forKey: "floatWidgets") ?? ["clock"]
-        if let f = d.array(forKey: "floatFrame") as? [Double], f.count == 4 {
-            floatFrame = NSRect(x: f[0], y: f[1], width: f[2], height: f[3])
+        if let data = d.data(forKey: "panels"),
+           let p = try? JSONDecoder().decode([PanelConfig].self, from: data), !p.isEmpty {
+            panels = p
         } else {
-            floatFrame = NSRect(x: 300, y: 400, width: 320, height: 72)
+            panels = [PanelConfig(id: UUID().uuidString, widgets: ["clock"],
+                                  x: 300, y: 400, pinned: false)]
         }
         textScale = d.dictionary(forKey: "textScale") as? [String: Double] ?? [:]
         glass = d.object(forKey: "glass") as? Bool ?? true
@@ -907,125 +870,69 @@ let allWidgets: [Widget] = [
 
 struct PanelView: View {
     @ObservedObject var config = Config.shared
-    let side: String  // "left" / "right" / "float"
+    let panelID: String
 
     var body: some View {
-        GeometryReader { geo in
-            let ids = config.widgets(side)
-            let all = ids.compactMap { id in allWidgets.first { $0.id == id } }
-            Group {
-                if side == "float" {
-                    // 每格固定 200 + 1px 分隔線，全部顯示（面板寬度已配合）
-                    HStack(spacing: 0) {
-                        ForEach(all.indices, id: \.self) { i in
-                            if i > 0 {
-                                Rectangle().fill(.primary.opacity(0.15))
-                                    .frame(width: FloatingPanel.separator, height: 40)
-                            }
-                            cell(all[i], ids: ids, fixedWidth: FloatingPanel.widgetWidth)
-                        }
-                    }
-                } else {
-                    // dock 兩側：塞得下幾個由 fitting 決定，每格最寬 250，整排置中
-                    let items = Self.fitting(all, in: geo.size.width - 24)
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        ForEach(items.indices, id: \.self) { i in
-                            if i > 0 { Divider().frame(height: 36) }
-                            cell(items[i], ids: ids, fixedWidth: nil)
-                        }
-                        Spacer(minLength: 0)
-                    }
+        let ids = config.widgets(panelID)
+        let all = ids.compactMap { id in allWidgets.first { $0.id == id } }
+        // 每格固定 200 + 1px 分隔線，全部顯示（視窗寬度已配合）
+        HStack(spacing: 0) {
+            ForEach(all.indices, id: \.self) { i in
+                if i > 0 {
+                    Rectangle().fill(.primary.opacity(0.15))
+                        .frame(width: FloatingPanel.separator, height: 40)
                 }
+                cell(all[i], ids: ids)
             }
-            .panelChrome(glass: config.glass, border: config.border,
-                         hPad: side == "float" ? 0 : 12)
         }
+        .panelChrome(glass: config.glass, border: config.border, hPad: 0)
     }
 
-    @ViewBuilder
-    private func cell(_ w: Widget, ids: [String], fixedWidth: CGFloat?) -> some View {
-        let base = w.make()
+    private func cell(_ w: Widget, ids: [String]) -> some View {
+        w.make()
             .environment(\.widgetScale, CGFloat(config.textScale[w.id] ?? 1))
-        Group {
-            if let fw = fixedWidth {
-                base.frame(width: fw)
-            } else {
-                base.frame(maxWidth: 250)
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { w.action?() }
-        .contextMenu {
-            Button("← Move Left") { reorder(w.id, by: -1) }
-            Button("Move Right →") { reorder(w.id, by: 1) }
-            Divider()
-            Button("Text Larger") { config.bumpScale(w.id, by: 0.1) }
-            Button("Text Smaller") { config.bumpScale(w.id, by: -0.1) }
-            Divider()
-            let inactive = allWidgets.filter { !ids.contains($0.id) }
-            if !inactive.isEmpty {
-                Menu("Add Widget") {
-                    ForEach(inactive, id: \.id) { ww in
-                        Button(ww.title) { add(ww.id) }
+            .frame(width: FloatingPanel.widgetWidth)
+            .contentShape(Rectangle())
+            .onTapGesture { w.action?() }
+            .contextMenu {
+                Button("← Move Left") { reorder(w.id, by: -1) }
+                Button("Move Right →") { reorder(w.id, by: 1) }
+                Divider()
+                Button("Text Larger") { config.bumpScale(w.id, by: 0.1) }
+                Button("Text Smaller") { config.bumpScale(w.id, by: -0.1) }
+                Divider()
+                let inactive = allWidgets.filter { !ids.contains($0.id) }
+                if !inactive.isEmpty {
+                    Menu("Add Widget") {
+                        ForEach(inactive, id: \.id) { ww in
+                            Button(ww.title) { add(ww.id) }
+                        }
                     }
                 }
+                Button("Remove") { remove(w.id) }
             }
-            Button("Remove") { remove(w.id) }
-        }
     }
 
     private func reorder(_ id: String, by delta: Int) {
-        config.setWidgets(side, movedIds(config.widgets(side), id, by: delta))
+        config.setWidgets(panelID, movedIds(config.widgets(panelID), id, by: delta))
     }
-
     private func remove(_ id: String) {
-        config.setWidgets(side, config.widgets(side).filter { $0 != id })
+        config.setWidgets(panelID, config.widgets(panelID).filter { $0 != id })
     }
-
     private func add(_ id: String) {
-        config.setWidgets(side, config.widgets(side) + [id])
-    }
-
-    // 等寬均分下，每格 ≥ 已納入者的最大 minWidth 才算塞得下；
-    // 窄螢幕（dock 在內建螢幕）只顯示前面塞得下的幾個，至少一個
-    static func fitting(_ all: [Widget], in width: CGFloat) -> [Widget] {
-        guard let first = all.first else { return [] }
-        var best = [first]
-        for n in 1...all.count {
-            let prefix = Array(all.prefix(n))
-            let maxMin = prefix.map(\.minWidth).max() ?? 0
-            if CGFloat(n) * maxMin <= width { best = prefix } else { break }
-        }
-        return best
+        config.setWidgets(panelID, config.widgets(panelID) + [id])
     }
 }
 
 // MARK: - Panel
 
-final class SpacerPanel: NSPanel {
-    init() {
-        super.init(contentRect: .zero,
-                   styleMask: [.borderless, .nonactivatingPanel],
-                   backing: .buffered, defer: false)
-        // 比 dock 低一層：一樣永遠看得到，但 hover 放大的 dock 會畫在面板上面
-        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) - 1)
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = false
-        isMovable = false
-        // 吃掉點擊：穿透會點到桌布，觸發 macOS「顯示桌面」把所有視窗趕跑。
-        // .nonactivatingPanel 保證不搶焦點，點了沒反應但也不會出事。
-        ignoresMouseEvents = false
-    }
-}
-
-/// 可拖曳的浮動面板：只移動，不縮放。寬度由 widget 數決定（每格固定 200）。
+/// 可拖曳的浮動面板：寬度由 widget 數決定（每格固定 200）。釘住時不可拖。
 final class FloatingPanel: NSPanel {
     static let panelHeight: CGFloat = 72
     static let widgetWidth: CGFloat = 200
     static let separator: CGFloat = 1
+
+    var panelID = ""
 
     /// n 個 widget 該有的面板寬度：200*n + 分隔線(n-1)
     static func width(for count: Int) -> CGFloat {
@@ -1049,25 +956,18 @@ final class FloatingPanel: NSPanel {
 
 // MARK: - App
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private let leftPanel = SpacerPanel()
-    private let rightPanel = SpacerPanel()
-    private let floatPanel = FloatingPanel()
-    private var statusItem: NSStatusItem?
-    private var lastApplied: (dock: NSRect, left: Bool, right: Bool, hover: Bool)?
-    private var tickCount = 0
-    private var configWatcher: AnyCancellable?
-    private var restoringFloat = false  // 程式還原位置時別回存，免得抖
+/// 選單項目引用：哪塊面板、哪個 widget（widget 可為 nil 表示面板層級操作）
+final class MenuRef: NSObject {
+    let panel: String
+    let widget: String?
+    init(panel: String, widget: String? = nil) { self.panel = panel; self.widget = widget }
+}
 
-    // dock 放大時 CoreDockGetRect 不會變（實測），改用設定值估算讓位量來模仿
-    // ponytail: 粗估單側讓位 = largesize - tilesize，不追精確放大幾何
-    private let hoverRetreat: CGFloat = {
-        let d = UserDefaults(suiteName: "com.apple.dock")
-        guard d?.bool(forKey: "magnification") == true else { return 0 }
-        let tile = d?.object(forKey: "tilesize") as? CGFloat ?? 64
-        let large = d?.object(forKey: "largesize") as? CGFloat ?? 128
-        return max(0, large - tile)
-    }()
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private var windows: [String: FloatingPanel] = [:]  // panelID → 視窗
+    private var statusItem: NSStatusItem?
+    private var configWatcher: AnyCancellable?
+    private var restoring = false  // 程式還原位置時別回存，免得抖
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1076,38 +976,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             try? SMAppService.mainApp.register()
             UserDefaults.standard.set(true, forKey: "didAutoRegisterLogin")
         }
-        leftPanel.contentView = FirstMouseHostingView(rootView: PanelView(side: "left"))
-        rightPanel.contentView = FirstMouseHostingView(rootView: PanelView(side: "right"))
-        setupFloatContent()
-        floatPanel.delegate = self
         setupStatusItem()
-        // 右鍵選單也會改 Config，狀態列選單跟著重建才不會顯示過期狀態
+        // 任何 Config 變動都重建選單並同步面板（加/移面板、加 widget 立刻反映）
         configWatcher = Config.shared.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.rebuildMenu()
-                self?.updateFloatPanel()
+                self?.syncPanels()
             }
-        updateFloatPanel()
-        layout()
-        // 滑鼠靠近 dock 時以 30Hz 跟隨 hover 放大縮小；平常每 2 秒巡一次
-        Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
-            self?.tick()
-        }
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil, queue: .main) { [weak self] _ in self?.layout() }
+        syncPanels()
     }
+
+    // MARK: 面板管理
+
+    /// 依 Config.panels 建立 / 移除 / 更新每塊浮動面板
+    private func syncPanels() {
+        let cfg = Config.shared
+        let ids = Set(cfg.panels.map(\.id))
+        for (id, win) in windows where !ids.contains(id) {  // config 沒了就關掉
+            win.orderOut(nil)
+            windows[id] = nil
+        }
+        for p in cfg.panels {
+            let win = windows[p.id] ?? makePanel(p.id)
+            windows[p.id] = win
+            let frame = NSRect(x: p.x, y: p.y,
+                               width: FloatingPanel.width(for: p.widgets.count),
+                               height: FloatingPanel.panelHeight)
+            if win.frame != frame {
+                restoring = true
+                win.setFrame(frame, display: true)
+                restoring = false
+            }
+            win.isMovableByWindowBackground = !p.pinned  // 釘住 = 不能拖
+            win.orderFrontRegardless()
+        }
+    }
+
+    private func makePanel(_ id: String) -> FloatingPanel {
+        let win = FloatingPanel()
+        win.panelID = id
+        win.delegate = self
+        win.contentView = FirstMouseHostingView(rootView: PanelView(panelID: id))
+        return win
+    }
+
+    // 拖曳後存位置（釘住的不會觸發，因為不能拖）
+    func windowDidMove(_ notification: Notification) {
+        guard !restoring, let win = notification.object as? FloatingPanel else { return }
+        Config.shared.setPosition(win.panelID, x: win.frame.minX, y: win.frame.minY)
+    }
+
+    // MARK: 狀態列選單
 
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "rectangle.bottomthird.inset.filled",
+        item.button?.image = NSImage(systemSymbolName: "square.grid.2x2",
                                      accessibilityDescription: "Spacer")
         statusItem = item
         rebuildMenu()
     }
 
-    // 選單狀態（勾勾）直接反映 Config；每次改動整份重建，最省事
     private func rebuildMenu() {
         let menu = NSMenu()
         let start = NSMenuItem(title: "Start Pomodoro (25 min)",
@@ -1119,9 +1048,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         stop.target = self
         menu.addItem(stop)
         menu.addItem(.separator())
-        menu.addItem(sideItem(title: "Left Panel", side: "left"))
-        menu.addItem(sideItem(title: "Right Panel", side: "right"))
-        menu.addItem(sideItem(title: "Floating Panel", side: "float"))
+        for (i, p) in Config.shared.panels.enumerated() {
+            menu.addItem(panelItem(p, index: i))
+        }
+        let add = NSMenuItem(title: "Add Panel",
+                             action: #selector(addPanel), keyEquivalent: "n")
+        add.target = self
+        menu.addItem(add)
         menu.addItem(.separator())
         let glass = NSMenuItem(title: "Glass Background",
                                action: #selector(toggleGlass), keyEquivalent: "")
@@ -1144,25 +1077,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem?.menu = menu
     }
 
-    // tag: 0 = 左, 1 = 右, 2 = 浮動；representedObject = widget id
-    private static let sides = ["left", "right", "float"]
-    private func sideForTag(_ tag: Int) -> String { AppDelegate.sides[tag] }
-
-    private func sideItem(title: String, side: String) -> NSMenuItem {
+    private func panelItem(_ p: PanelConfig, index: Int) -> NSMenuItem {
         let cfg = Config.shared
-        let tag = AppDelegate.sides.firstIndex(of: side) ?? 0
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: "Panel \(index + 1)" + (p.pinned ? "  · pinned" : ""),
+                              action: nil, keyEquivalent: "")
         let sub = NSMenu()
-        let enabled = NSMenuItem(title: "Enabled",
-                                 action: #selector(toggleSide(_:)), keyEquivalent: "")
-        enabled.target = self
-        enabled.tag = tag
-        enabled.state = cfg.enabled(side) ? .on : .off
-        sub.addItem(enabled)
+        let pin = NSMenuItem(title: "Pinned",
+                             action: #selector(togglePin(_:)), keyEquivalent: "")
+        pin.target = self
+        pin.representedObject = MenuRef(panel: p.id)
+        pin.state = p.pinned ? .on : .off
+        sub.addItem(pin)
         sub.addItem(.separator())
-        // 已啟用的 widget 按顯示順序列出，每個帶移動 / 縮放 / 移除
-        let ids = cfg.widgets(side)
-        for (i, id) in ids.enumerated() {
+        for (i, id) in p.widgets.enumerated() {
             guard let w = allWidgets.first(where: { $0.id == id }) else { continue }
             let scale = cfg.textScale[id] ?? 1
             let suffix = scale == 1 ? "" : String(format: "  ·  %.0f%%", scale * 100)
@@ -1176,63 +1103,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                    ("Remove", #selector(removeWidget(_:)))] {
                 let op = NSMenuItem(title: opTitle, action: sel, keyEquivalent: "")
                 op.target = self
-                op.tag = tag
-                op.representedObject = id
+                op.representedObject = MenuRef(panel: p.id, widget: id)
                 ops.addItem(op)
             }
             mi.submenu = ops
             sub.addItem(mi)
         }
-        // 其餘 widget：點了加到最後
-        let inactive = allWidgets.filter { !ids.contains($0.id) }
+        let inactive = allWidgets.filter { !p.widgets.contains($0.id) }
         if !inactive.isEmpty { sub.addItem(.separator()) }
         for w in inactive {
             let mi = NSMenuItem(title: "Add \(w.title)",
                                 action: #selector(addWidget(_:)), keyEquivalent: "")
             mi.target = self
-            mi.tag = tag
-            mi.representedObject = w.id
+            mi.representedObject = MenuRef(panel: p.id, widget: w.id)
             sub.addItem(mi)
         }
+        sub.addItem(.separator())
+        let remove = NSMenuItem(title: "Remove Panel",
+                                action: #selector(removePanel(_:)), keyEquivalent: "")
+        remove.target = self
+        remove.representedObject = MenuRef(panel: p.id)
+        sub.addItem(remove)
         item.submenu = sub
         return item
     }
 
-    @objc private func toggleGlass() {
-        Config.shared.glass.toggle()
-        rebuildMenu()
+    // MARK: 動作
+
+    @objc private func addPanel() { Config.shared.addPanel() }
+
+    @objc private func removePanel(_ sender: NSMenuItem) {
+        guard let ref = sender.representedObject as? MenuRef else { return }
+        Config.shared.removePanel(ref.panel)
     }
 
-    @objc private func toggleBorder() {
-        Config.shared.border.toggle()
-        rebuildMenu()
-    }
-
-    @objc private func toggleLaunchAtLogin() {
-        let svc = SMAppService.mainApp
-        if svc.status == .enabled {
-            try? svc.unregister()
-        } else {
-            try? svc.register()
-        }
-        rebuildMenu()
-    }
-
-    @objc private func toggleSide(_ sender: NSMenuItem) {
-        let cfg = Config.shared
-        let side = sideForTag(sender.tag)
-        cfg.setEnabled(side, !cfg.enabled(side))
-        rebuildMenu()
-        layout()
+    @objc private func togglePin(_ sender: NSMenuItem) {
+        guard let ref = sender.representedObject as? MenuRef else { return }
+        Config.shared.togglePin(ref.panel)
     }
 
     private func mutateWidgets(_ sender: NSMenuItem,
                                _ transform: ([String], String) -> [String]) {
-        guard let id = sender.representedObject as? String else { return }
+        guard let ref = sender.representedObject as? MenuRef, let wid = ref.widget else { return }
         let cfg = Config.shared
-        let side = sideForTag(sender.tag)
-        cfg.setWidgets(side, transform(cfg.widgets(side), id))
-        rebuildMenu()
+        cfg.setWidgets(ref.panel, transform(cfg.widgets(ref.panel), wid))
     }
 
     @objc private func addWidget(_ sender: NSMenuItem) {
@@ -1247,165 +1161,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func moveWidgetDown(_ sender: NSMenuItem) {
         mutateWidgets(sender) { movedIds($0, $1, by: 1) }
     }
-
     @objc private func textLarger(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        Config.shared.bumpScale(id, by: 0.1)
-        rebuildMenu()
+        guard let ref = sender.representedObject as? MenuRef, let wid = ref.widget else { return }
+        Config.shared.bumpScale(wid, by: 0.1)
     }
     @objc private func textSmaller(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        Config.shared.bumpScale(id, by: -0.1)
+        guard let ref = sender.representedObject as? MenuRef, let wid = ref.widget else { return }
+        Config.shared.bumpScale(wid, by: -0.1)
+    }
+
+    @objc private func toggleGlass() { Config.shared.glass.toggle() }
+    @objc private func toggleBorder() { Config.shared.border.toggle() }
+
+    @objc private func toggleLaunchAtLogin() {
+        let svc = SMAppService.mainApp
+        if svc.status == .enabled { try? svc.unregister() } else { try? svc.register() }
         rebuildMenu()
     }
 
     @objc private func startPomodoro() { Pomodoro.shared.start(minutes: 25) }
     @objc private func stopPomodoro() { Pomodoro.shared.stop() }
-
-    private func setupFloatContent() {
-        floatPanel.contentView = FirstMouseHostingView(rootView: PanelView(side: "float"))
-    }
-
-    private func updateFloatPanel() {
-        let cfg = Config.shared
-        guard cfg.floatEnabled else { floatPanel.orderOut(nil); return }
-        // 寬度全由 widget 數決定：每格 200 + 分隔線，加 widget 立刻變寬
-        var frame = cfg.floatFrame
-        frame.size.width = FloatingPanel.width(for: cfg.floatWidgets.count)
-        frame.size.height = FloatingPanel.panelHeight
-        if frame != cfg.floatFrame { cfg.floatFrame = frame; return }  // 存回，watcher 再進來
-        if floatPanel.frame != frame {
-            restoringFloat = true
-            floatPanel.setFrame(frame, display: true)
-            restoringFloat = false
-        }
-        floatPanel.orderFrontRegardless()
-    }
-
-    // 使用者拖曳 / 縮放浮動面板後存位置與寬度
-    func windowDidMove(_ notification: Notification) { saveFloatFrame(notification) }
-    func windowDidResize(_ notification: Notification) { saveFloatFrame(notification) }
-
-    private func saveFloatFrame(_ notification: Notification) {
-        guard !restoringFloat, notification.object as? NSWindow === floatPanel else { return }
-        Config.shared.floatFrame = floatPanel.frame
-    }
-
-    private func tick() {
-        tickCount += 1
-        // 滑鼠快速飛離 dock 時也要復原，所以 hover 中一律持續 layout
-        if mouseNearDock() || lastApplied?.hover == true || tickCount % 60 == 0 { layout() }
-    }
-
-    private func mouseInDock(_ dock: NSRect) -> Bool {
-        dock.insetBy(dx: -16, dy: 0).contains(NSEvent.mouseLocation)
-    }
-
-    // 這函式只在 dock 存在（reserved > 24）時被呼叫，所以一般最大化視窗會停在 dock 上緣、
-    // 碰不到螢幕最底。fullscreen（含 Ghostty 的 non-native fullscreen）則從 menu bar 下方
-    // 一路蓋到螢幕最底、佔滿整個寬度，蓋住面板所在的 dock 死角。用這個特徵分辨。
-    private func hasFullscreenWindow(on screen: NSScreen) -> Bool {
-        guard let primary = NSScreen.screens.first,
-              let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
-                  as? [[String: Any]] else { return false }
-        let cgScreen = CGRect(x: screen.frame.minX,
-                              y: primary.frame.height - screen.frame.maxY,
-                              width: screen.frame.width, height: screen.frame.height)
-        let menuBar: CGFloat = 40  // window 頂端最多離螢幕頂 menu bar 高度
-        for info in list {
-            guard info[kCGWindowLayer as String] as? Int == 0,
-                  let dict = info[kCGWindowBounds as String] as? NSDictionary,
-                  let r = CGRect(dictionaryRepresentation: dict as CFDictionary)
-            else { continue }
-            // 必須「剛好」貼齊這個螢幕：左右對齊、底部貼齊、頂端在 menu bar 內。
-            // 只查左右底＋頂端範圍就能排掉比螢幕寬、或飄在螢幕外的 overlay（如 cua-driver）。
-            let topInRange = (r.minY - cgScreen.minY) >= -2
-                && (r.minY - cgScreen.minY) <= menuBar
-            let bottomAligned = abs(r.maxY - cgScreen.maxY) < 2
-            let leftAligned = abs(r.minX - cgScreen.minX) < 2
-            let rightAligned = abs(r.maxX - cgScreen.maxX) < 2
-            if topInRange, bottomAligned, leftAligned, rightAligned { return true }
-        }
-        return false
-    }
-
-    private func mouseNearDock() -> Bool {
-        let m = NSEvent.mouseLocation
-        for s in NSScreen.screens where s.frame.contains(m) {
-            return m.y < s.frame.minY + 140
-        }
-        return false
-    }
-
-    private func layout() {
-        guard let (dock, screen) = dockFrameAndScreen() else {
-            leftPanel.orderOut(nil)
-            rightPanel.orderOut(nil)
-            lastApplied = nil
-            return
-        }
-        // fullscreen 時讓路（dock 也是這樣）
-        if hasFullscreenWindow(on: screen) {
-            leftPanel.orderOut(nil)
-            rightPanel.orderOut(nil)
-            lastApplied = nil
-            return
-        }
-        let cfg0 = Config.shared
-        let hovering = hoverRetreat > 0 && mouseInDock(dock)
-        // 沒變就不重排，避免 30Hz 下白做工
-        if let last = lastApplied,
-           last == (dock, cfg0.leftEnabled, cfg0.rightEnabled, hovering) { return }
-        lastApplied = (dock, cfg0.leftEnabled, cfg0.rightEnabled, hovering)
-        let sf = screen.frame
-        let reserved = screen.visibleFrame.minY - sf.minY  // dock 佔用的底部高度
-        guard reserved > 24 else {
-            leftPanel.orderOut(nil)
-            rightPanel.orderOut(nil)
-            lastApplied = nil
-            return  // dock 自動隱藏 / 在側邊 → 沒有死角空間可用
-        }
-        // 對齊 dock 玻璃（實測 Tahoe：玻璃從底邊上方 4pt 起，頂到 reserved 上緣）
-        let gap: CGFloat = 8
-        let y = sf.minY + 4
-        let h = reserved - 4
-        let cfg = Config.shared
-        let retreat: CGFloat = hovering ? hoverRetreat : 0  // hover 時模仿 dock 放大讓位
-        // 外側貼齊螢幕邊（跟最大化視窗的邊對齊），只在 dock 側留 gap
-        if cfg.leftEnabled {
-            place(leftPanel, zoneMinX: sf.minX, zoneMaxX: dock.minX - gap - retreat,
-                  y: y, h: h)
-        } else {
-            leftPanel.orderOut(nil)
-        }
-        if cfg.rightEnabled {
-            place(rightPanel, zoneMinX: dock.maxX + gap + retreat, zoneMaxX: sf.maxX,
-                  y: y, h: h)
-        } else {
-            rightPanel.orderOut(nil)
-        }
-    }
-
-    private func place(_ panel: NSPanel, zoneMinX: CGFloat, zoneMaxX: CGFloat,
-                       y: CGFloat, h: CGFloat) {
-        // 死角只要放得下最小的 widget（clock/pomodoro ~90-100pt）就顯示面板；
-        // 塞得下幾個由 fitting() 決定。窄螢幕 dock 很寬時死角小，門檻高會整個藏掉。
-        let minW: CGFloat = 120
-        let available = zoneMaxX - zoneMinX
-        guard available >= minW, h > 30 else { panel.orderOut(nil); return }
-        let target = NSRect(x: zoneMinX, y: y, width: available, height: h)
-        // 已顯示時用動畫過去，跟 dock 的伸縮一樣滑順；首次出現直接定位
-        if panel.isVisible, panel.frame != target {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.2
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                panel.animator().setFrame(target, display: true)
-            }
-        } else {
-            panel.setFrame(target, display: true)
-        }
-        panel.orderFrontRegardless()
-    }
 }
 
 let app = NSApplication.shared

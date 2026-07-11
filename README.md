@@ -1,35 +1,35 @@
 # Spacer
 
-在超寬螢幕（如 3440x1440）上，macOS dock 置中後左右各剩一大塊死角。
-Spacer 在那裡放兩塊跟 dock 同層級的玻璃面板：左邊時鐘＋日期，右邊 CPU / RAM。
+桌面上的浮動玻璃面板，放你想看的小工具（widget），想擺哪就擺哪。
+拖兩塊到 dock 兩側的死角，就變回「dock 旁的資訊條」；也可以到處丟、疊很多塊。
 
-## 執行（需在 macOS 13+ 上）
+## 執行（需在 macOS 14+ 上）
 
 ```sh
 swift run                    # 開發
-swift build -c release       # 產出 .build/release/Spacer
+./make-app.sh                # 打包簽名版 /Applications/Spacer.app
 ```
 
-不需要任何權限（dock 位置用 HIServices 私有 API `CoreDockGetRect` 偵測，
-不碰 Accessibility 也不碰螢幕錄製；macOS 26 起 CGWindowList 的 Dock 視窗
-變成全螢幕大小，舊偵測法已失效）。選單列有一個圖示可以 Quit。
+選單列有圖示可以管理面板與 Quit。首次點某些 widget 會要授權（行事曆、Ghostty 自動化）。
 
-## 行為
+## 面板
 
-- 每 2 秒重新偵測 dock 位置（app 增減會改變 dock 寬度）。
-- dock 自動隱藏、放到左右側、或死角寬度 < 200pt 時，面板自動隱藏。
-- 面板會吃掉點擊（避免點到桌布觸發「顯示桌面」），但不搶焦點。
+- **Add Panel**：從選單列新增一塊面板；每塊有自己的 widget 清單與位置。
+- **拖曳**：拖面板背景即可移動（Liquid Glass 半透明）。
+- **Pin**：釘住後固定位置、不能再拖；再按一次解除。
+- 面板寬度 = widget 數 × 200；加 / 移 widget 會立刻變寬變窄。
 
-## 目前的取捨（要升級再說）
+## Widget
 
-- dock 在哪個螢幕面板就跟到哪個螢幕，但只支援 dock 在底部。
-- 面板內容寫死：左時鐘、右系統數據。想換內容改 `main.swift` 裡的
-  `ClockView` / `StatsView` 即可。
+Clock、CPU/RAM、Network、GitHub、Now Playing（封面當背景 + 播放控制）、
+Calendar、Pomodoro（進度環）、herdr Agents（遠端 SSH agent 看板）。
+在面板上右鍵可增減、排序、調字級；每個 widget 點擊有各自的動作
+（開對應 app / 網頁 / 終端機）。
 
-## 這塊空間還能拿來做什麼（roadmap 候選）
+外觀：選單列可切 Glass Background、Panel Border；每塊面板都是同一組
+「儀表」視覺語彙（圓體等寬數字 + 微型大寫標籤 + 琥珀 HUD 色）。
 
-- 正在播放 + 播放控制（需拿掉點擊穿透）
-- 今日行事曆下一個行程（EventKit）
-- 剪貼簿歷史 / 拖放暫存架（Yoink 式 shelf）
-- 常用 app 快捷列 / 最近檔案
-- 番茄鐘、天氣、網路流量、CI 或 Docker 狀態
+## 取捨（要升級再說）
+
+- widget 內容與點擊動作寫死在 `main.swift`；herdr 的遠端主機也寫死 `omarchy-outside`。
+- 面板不會自動閃避 dock 放大或 fullscreen（改成純浮動後拿掉了那套邏輯）。
