@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import EventKit
 import ServiceManagement
 import SwiftUI
@@ -153,16 +154,25 @@ extension EnvironmentValues {
 
 extension View {
     @ViewBuilder
-    func panelChrome() -> some View {
+    func panelChrome(glass: Bool = true, border: Bool = false) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
         let base = padding(.horizontal, 18)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        if #available(macOS 26.0, *) {
-            // 跟 Tahoe dock 同款 Liquid Glass
-            base.glassEffect(.regular,
-                             in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        } else {
-            base.background(.ultraThinMaterial,
-                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        Group {
+            if !glass {
+                base  // 關掉背景：widget 直接浮在桌布上
+            } else if #available(macOS 26.0, *) {
+                // 跟 Tahoe dock 同款 Liquid Glass（全強度，別再用 opacity 淡化）
+                base.glassEffect(.clear, in: shape)
+            } else {
+                base.background(.ultraThinMaterial,
+                                in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+        }
+        .overlay {
+            if border {
+                shape.strokeBorder(Color.primary.opacity(0.25), lineWidth: 1)
+            }
         }
     }
 }
@@ -321,6 +331,7 @@ private struct TextWidthKey: PreferenceKey {
 /// 塞得下就靜態靠左；塞不下就無縫循環跑馬燈
 struct MarqueeText: View {
     let text: String
+    var animating: Bool = true  // false = 停在原地不捲動（暫停時）
     @State private var textW: CGFloat = 0
     @State private var start = Date()
     private let gap: CGFloat = 36
@@ -329,7 +340,7 @@ struct MarqueeText: View {
     var body: some View {
         GeometryReader { geo in
             Group {
-                if textW > geo.size.width {
+                if textW > geo.size.width && animating {
                     TimelineView(.animation(minimumInterval: 1.0 / 30)) { ctx in
                         let span = Double(textW + gap)
                         let phase = (ctx.date.timeIntervalSince(start) * speed)
@@ -370,36 +381,48 @@ struct NowPlayingView: View {
     private let tick = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        HStack(spacing: 10) {
-            if let artwork {
-                Image(nsImage: artwork)
-                    .resizable().scaledToFill()
-                    .frame(width: 44, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-            if let title {
-                VStack(alignment: .leading, spacing: 3) {
-                    MarqueeText(text: title)
-                        .font(.system(size: 10 * ws, weight: .semibold))
-                        .frame(height: 14 * ws)
-                        .frame(maxWidth: 170)  // 窄面板時縮到可用寬度，跑馬燈照跑
-                    HStack(spacing: 16) {
-                        controlButton("backward.fill", "previous-track")
-                        controlButton(playing ? "pause.fill" : "play.fill",
-                                      "toggle-play-pause")
-                        controlButton("forward.fill", "next-track")
+        GeometryReader { geo in
+            // 封面滿版當背景（不論播放/暫停），標題在上、控制在下並置中疊上。
+            // 暫停時 marquee 停住。
+            let titleW = max(60, min(280, geo.size.width - 40))
+            Group {
+                if let title {
+                    VStack(spacing: 4) {
+                        MarqueeText(text: title, animating: playing)
+                            .font(.system(size: 10 * ws, weight: .semibold))
+                            .frame(width: titleW, height: 14 * ws)
+                        controlsRow
                     }
+                    .shadow(radius: 4)  // 疊在圖上，加陰影保可讀
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .background {
+                        if let art = artwork {
+                            Image(nsImage: art).resizable().scaledToFill()
+                                // 薄薄一層毛玻璃（保留封面細節）+ 深色 scrim 讓字看得清
+                                .overlay(Rectangle().fill(.ultraThinMaterial).opacity(0.35))
+                                .overlay(Color.black.opacity(0.2))
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                } else {
+                    Text("♪ —")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .onTapGesture { runDetached("open https://www.youtube.com") }
                 }
-            } else {
-                Text("♪ —")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .onTapGesture { runDetached("open https://www.youtube.com") }
             }
         }
         .onAppear { refresh() }
         .onReceive(tick) { _ in refresh() }
+    }
+
+    private var controlsRow: some View {
+        HStack(spacing: 16 * ws) {
+            controlButton("backward.fill", "previous-track")
+            controlButton(playing ? "pause.fill" : "play.fill", "toggle-play-pause")
+            controlButton("forward.fill", "next-track")
+        }
     }
 
     private func controlButton(_ symbol: String, _ cmd: String) -> some View {
@@ -447,17 +470,15 @@ struct HerdrView: View {
                 let blocked = counts["blocked"] ?? 0
                 let working = counts["working"] ?? 0
                 let idle = (counts["idle"] ?? 0) + (counts["unknown"] ?? 0)
-                HStack(spacing: 6) {
-                    Text("🤖")
-                    if blocked > 0 {
-                        Text("⚠ \(blocked)").foregroundStyle(.red).fontWeight(.semibold)
+                if working > 0 || blocked > 0 {
+                    // 有動靜才跑動畫 timeline，全 idle 時零開銷
+                    TimelineView(.animation(minimumInterval: 1.0 / 30)) { ctx in
+                        board(working: working, blocked: blocked, idle: idle,
+                              t: ctx.date.timeIntervalSinceReferenceDate)
                     }
-                    if working > 0 {
-                        Text("⚙ \(working)").foregroundStyle(.cyan)
-                    }
-                    Text("\(idle) idle").foregroundStyle(.secondary)
+                } else {
+                    board(working: 0, blocked: 0, idle: idle, t: 0)
                 }
-                .font(.system(size: 11 * ws).monospacedDigit())
             } else {
                 Text("🤖 herdr —")
                     .font(.system(size: 11 * ws))
@@ -466,6 +487,41 @@ struct HerdrView: View {
         }
         .onAppear { refresh() }
         .onReceive(tick) { _ in refresh() }
+    }
+
+    private func board(working: Int, blocked: Int, idle: Int, t: Double) -> some View {
+        HStack(spacing: 8 * ws) {
+            Text("🤖").font(.system(size: 13 * ws))
+            if blocked > 0 {
+                // 等你回覆的 agent：紅色呼吸閃爍
+                pill(.red, opacity: 0.55 + 0.45 * sin(t * 5)) {
+                    Text("⚠ \(blocked)")
+                }
+            }
+            if working > 0 {
+                pill(.cyan) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 9 * ws, weight: .bold))
+                            .rotationEffect(.degrees(
+                                (t * 120).truncatingRemainder(dividingBy: 360)))
+                        Text("\(working)")
+                    }
+                }
+            }
+            pill(.gray) { Text("\(idle) idle") }
+        }
+    }
+
+    private func pill<Content: View>(_ color: Color, opacity: Double = 1,
+                                     @ViewBuilder content: () -> Content) -> some View {
+        content()
+            .font(.system(size: 10 * ws, weight: .semibold).monospacedDigit())
+            .foregroundStyle(color)
+            .padding(.horizontal, 8 * ws)
+            .padding(.vertical, 3 * ws)
+            .background(Capsule().fill(color.opacity(0.16)))
+            .opacity(opacity)
     }
 
     private func refresh() {
@@ -529,9 +585,12 @@ struct PomodoroView: View {
     }
 }
 
-/// 非激活面板的第一下點擊預設被當成 activation 吃掉，要收 tap 必須接受 first mouse
+/// 非激活面板的第一下點擊預設被當成 activation 吃掉，要收 tap 必須接受 first mouse。
+/// mouseDownCanMoveWindow=true 讓有開 isMovableByWindowBackground 的視窗（浮動面板）
+/// 能拖背景移動；沒開的（dock 兩側面板）不受影響。SwiftUI 的按鈕仍可點。
 final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { true }
 }
 
 // MARK: - 設定（widget 分配到哪側、面板開關），存 UserDefaults
@@ -548,9 +607,51 @@ final class Config: ObservableObject {
     @Published var rightWidgets: [String] {
         didSet { d.set(rightWidgets, forKey: "rightWidgets") }
     }
+    // 第三塊可拖曳的浮動面板
+    @Published var floatEnabled: Bool { didSet { d.set(floatEnabled, forKey: "floatEnabled") } }
+    @Published var floatWidgets: [String] {
+        didSet { d.set(floatWidgets, forKey: "floatWidgets") }
+    }
+    @Published var floatFrame: NSRect {
+        didSet {
+            d.set([floatFrame.minX, floatFrame.minY, floatFrame.width, floatFrame.height],
+                  forKey: "floatFrame")
+        }
+    }
+    // side: "left" / "right" / "float" 的統一存取
+    func widgets(_ side: String) -> [String] {
+        side == "left" ? leftWidgets : side == "right" ? rightWidgets : floatWidgets
+    }
+    func setWidgets(_ side: String, _ v: [String]) {
+        switch side {
+        case "left": leftWidgets = v
+        case "right": rightWidgets = v
+        default: floatWidgets = v
+        }
+    }
+    func enabled(_ side: String) -> Bool {
+        side == "left" ? leftEnabled : side == "right" ? rightEnabled : floatEnabled
+    }
+    func setEnabled(_ side: String, _ v: Bool) {
+        switch side {
+        case "left": leftEnabled = v
+        case "right": rightEnabled = v
+        default: floatEnabled = v
+        }
+    }
     // widget id → 文字縮放倍率（1 = 原始大小）
     @Published var textScale: [String: Double] {
         didSet { d.set(textScale, forKey: "textScale") }
+    }
+    // 面板玻璃背景開關
+    @Published var glass: Bool { didSet { d.set(glass, forKey: "glass") } }
+    // 面板外框線開關
+    @Published var border: Bool { didSet { d.set(border, forKey: "border") } }
+
+    func bumpScale(_ id: String, by delta: Double) {
+        var t = textScale
+        t[id] = min(1.8, max(0.6, (t[id] ?? 1) + delta))
+        textScale = t
     }
 
     private init() {
@@ -559,8 +660,27 @@ final class Config: ObservableObject {
         leftWidgets = d.stringArray(forKey: "leftWidgets") ?? ["calendar", "pomodoro"]
         rightWidgets = d.stringArray(forKey: "rightWidgets")
             ?? ["stats", "net", "github", "clock"]
+        floatEnabled = d.object(forKey: "floatEnabled") as? Bool ?? false
+        floatWidgets = d.stringArray(forKey: "floatWidgets") ?? ["clock"]
+        if let f = d.array(forKey: "floatFrame") as? [Double], f.count == 4 {
+            floatFrame = NSRect(x: f[0], y: f[1], width: f[2], height: f[3])
+        } else {
+            floatFrame = NSRect(x: 300, y: 400, width: 320, height: 72)
+        }
         textScale = d.dictionary(forKey: "textScale") as? [String: Double] ?? [:]
+        glass = d.object(forKey: "glass") as? Bool ?? true
+        border = d.object(forKey: "border") as? Bool ?? true
     }
+}
+
+/// 陣列裡把 id 往前/後移一格
+func movedIds(_ arr: [String], _ id: String, by delta: Int) -> [String] {
+    guard let i = arr.firstIndex(of: id) else { return arr }
+    let j = i + delta
+    guard j >= 0, j < arr.count else { return arr }
+    var a = arr
+    a.swapAt(i, j)
+    return a
 }
 
 func runDetached(_ cmd: String) {
@@ -641,11 +761,11 @@ let allWidgets: [Widget] = [
 
 struct PanelView: View {
     @ObservedObject var config = Config.shared
-    let isLeft: Bool
+    let side: String  // "left" / "right" / "float"
 
     var body: some View {
         GeometryReader { geo in
-            let ids = isLeft ? config.leftWidgets : config.rightWidgets
+            let ids = config.widgets(side)
             let all = ids.compactMap { id in allWidgets.first { $0.id == id } }
             let items = Self.fitting(all, in: geo.size.width - 36)
             HStack(spacing: 0) {
@@ -657,10 +777,43 @@ struct PanelView: View {
                         .frame(maxWidth: .infinity)  // 每個 widget 等寬均分
                         .contentShape(Rectangle())
                         .onTapGesture { items[i].action?() }
+                        .contextMenu {
+                            Button("← Move Left") { reorder(items[i].id, by: -1) }
+                            Button("Move Right →") { reorder(items[i].id, by: 1) }
+                            Divider()
+                            Button("Text Larger") {
+                                config.bumpScale(items[i].id, by: 0.1)
+                            }
+                            Button("Text Smaller") {
+                                config.bumpScale(items[i].id, by: -0.1)
+                            }
+                            Divider()
+                            let inactive = allWidgets.filter { !ids.contains($0.id) }
+                            if !inactive.isEmpty {
+                                Menu("Add Widget") {
+                                    ForEach(inactive, id: \.id) { w in
+                                        Button(w.title) { add(w.id) }
+                                    }
+                                }
+                            }
+                            Button("Remove") { remove(items[i].id) }
+                        }
                 }
             }
-            .panelChrome()
+            .panelChrome(glass: config.glass, border: config.border)
         }
+    }
+
+    private func reorder(_ id: String, by delta: Int) {
+        config.setWidgets(side, movedIds(config.widgets(side), id, by: delta))
+    }
+
+    private func remove(_ id: String) {
+        config.setWidgets(side, config.widgets(side).filter { $0 != id })
+    }
+
+    private func add(_ id: String) {
+        config.setWidgets(side, config.widgets(side) + [id])
     }
 
     // 等寬均分下，每格 ≥ 已納入者的最大 minWidth 才算塞得下；
@@ -697,14 +850,93 @@ final class SpacerPanel: NSPanel {
     }
 }
 
+/// 可拖曳、可水平縮放的浮動面板：位置與寬度由使用者決定，不參與 dock 排版。
+final class FloatingPanel: NSPanel {
+    static let panelHeight: CGFloat = 72
+
+    init() {
+        super.init(contentRect: .zero,
+                   styleMask: [.borderless, .nonactivatingPanel, .resizable],
+                   backing: .buffered, defer: false)
+        level = .floating
+        collectionBehavior = [.canJoinAllSpaces, .ignoresCycle]
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        isMovableByWindowBackground = true  // 拖背景即可移動
+        ignoresMouseEvents = false
+        minSize = NSSize(width: 120, height: Self.panelHeight)
+        maxSize = NSSize(width: 4000, height: Self.panelHeight)
+    }
+}
+
+/// 浮動面板左右邊緣的縮放握把。mouseDownCanMoveWindow=false 讓它「不」觸發背景拖移，
+/// 自己用 mouseDragged 改視窗寬度（左握把移左緣、右握把移右緣）。
+final class ResizeHandleView: NSView {
+    enum Edge { case left, right }
+    let edge: Edge
+    static let width: CGFloat = 12
+
+    init(edge: Edge) {
+        self.edge = edge
+        super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let win = window else { return }
+        let mx = NSEvent.mouseLocation.x  // 螢幕座標，跟 window.frame 同一系
+        var f = win.frame
+        if edge == .right {
+            f.size.width = min(win.maxSize.width, max(win.minSize.width, mx - f.minX))
+        } else {
+            let maxX = f.maxX
+            let minX = min(maxX - win.minSize.width, max(maxX - win.maxSize.width, mx))
+            f.origin.x = minX
+            f.size.width = maxX - minX
+        }
+        win.setFrame(f, display: true)
+    }
+
+    override func draw(_ rect: NSRect) {
+        // 中央畫一條淡淡的直條，讓使用者看得到可以拖
+        let bar = NSRect(x: bounds.midX - 1.5, y: bounds.midY - 11, width: 3, height: 22)
+        NSColor.secondaryLabelColor.withAlphaComponent(0.5).setFill()
+        NSBezierPath(roundedRect: bar, xRadius: 1.5, yRadius: 1.5).fill()
+    }
+}
+
+/// 浮動面板容器：glass hosting view 鋪滿，握把疊在左右緣。
+/// hitTest 強制邊緣點擊落到握把（否則 SwiftUI host 會先吃掉、變成移動視窗）。
+final class FloatContainer: NSView {
+    var leftHandle: ResizeHandleView?
+    var rightHandle: ResizeHandleView?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if let l = leftHandle, l.frame.contains(local) { return l }
+        if let r = rightHandle, r.frame.contains(local) { return r }
+        return super.hitTest(point)
+    }
+}
+
 // MARK: - App
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let leftPanel = SpacerPanel()
     private let rightPanel = SpacerPanel()
+    private let floatPanel = FloatingPanel()
     private var statusItem: NSStatusItem?
     private var lastApplied: (dock: NSRect, left: Bool, right: Bool, hover: Bool)?
     private var tickCount = 0
+    private var configWatcher: AnyCancellable?
+    private var restoringFloat = false  // 程式還原位置時別回存，免得抖
 
     // dock 放大時 CoreDockGetRect 不會變（實測），改用設定值估算讓位量來模仿
     // ponytail: 粗估單側讓位 = largesize - tilesize，不追精確放大幾何
@@ -723,9 +955,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? SMAppService.mainApp.register()
             UserDefaults.standard.set(true, forKey: "didAutoRegisterLogin")
         }
-        leftPanel.contentView = FirstMouseHostingView(rootView: PanelView(isLeft: true))
-        rightPanel.contentView = FirstMouseHostingView(rootView: PanelView(isLeft: false))
+        leftPanel.contentView = FirstMouseHostingView(rootView: PanelView(side: "left"))
+        rightPanel.contentView = FirstMouseHostingView(rootView: PanelView(side: "right"))
+        setupFloatContent()
+        floatPanel.delegate = self
         setupStatusItem()
+        // 右鍵選單也會改 Config，狀態列選單跟著重建才不會顯示過期狀態
+        configWatcher = Config.shared.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.rebuildMenu()
+                self?.updateFloatPanel()
+            }
+        updateFloatPanel()
         layout()
         // 滑鼠靠近 dock 時以 30Hz 跟隨 hover 放大縮小；平常每 2 秒巡一次
         Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
@@ -756,9 +998,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stop.target = self
         menu.addItem(stop)
         menu.addItem(.separator())
-        menu.addItem(sideItem(title: "Left Panel", isLeft: true))
-        menu.addItem(sideItem(title: "Right Panel", isLeft: false))
+        menu.addItem(sideItem(title: "Left Panel", side: "left"))
+        menu.addItem(sideItem(title: "Right Panel", side: "right"))
+        menu.addItem(sideItem(title: "Floating Panel", side: "float"))
         menu.addItem(.separator())
+        let glass = NSMenuItem(title: "Glass Background",
+                               action: #selector(toggleGlass), keyEquivalent: "")
+        glass.target = self
+        glass.state = Config.shared.glass ? .on : .off
+        menu.addItem(glass)
+        let border = NSMenuItem(title: "Panel Border",
+                                action: #selector(toggleBorder), keyEquivalent: "")
+        border.target = self
+        border.state = Config.shared.border ? .on : .off
+        menu.addItem(border)
         let login = NSMenuItem(title: "Launch at Login",
                                action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         login.target = self
@@ -770,21 +1023,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = menu
     }
 
-    // tag: 0 = 左側, 1 = 右側；representedObject = widget id
-    private func sideItem(title: String, isLeft: Bool) -> NSMenuItem {
+    // tag: 0 = 左, 1 = 右, 2 = 浮動；representedObject = widget id
+    private static let sides = ["left", "right", "float"]
+    private func sideForTag(_ tag: Int) -> String { AppDelegate.sides[tag] }
+
+    private func sideItem(title: String, side: String) -> NSMenuItem {
         let cfg = Config.shared
-        let side = isLeft ? 0 : 1
+        let tag = AppDelegate.sides.firstIndex(of: side) ?? 0
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let sub = NSMenu()
         let enabled = NSMenuItem(title: "Enabled",
                                  action: #selector(toggleSide(_:)), keyEquivalent: "")
         enabled.target = self
-        enabled.tag = side
-        enabled.state = (isLeft ? cfg.leftEnabled : cfg.rightEnabled) ? .on : .off
+        enabled.tag = tag
+        enabled.state = cfg.enabled(side) ? .on : .off
         sub.addItem(enabled)
         sub.addItem(.separator())
-        // 已啟用的 widget 按顯示順序列出，每個帶 Move Up / Move Down / Remove
-        let ids = isLeft ? cfg.leftWidgets : cfg.rightWidgets
+        // 已啟用的 widget 按顯示順序列出，每個帶移動 / 縮放 / 移除
+        let ids = cfg.widgets(side)
         for (i, id) in ids.enumerated() {
             guard let w = allWidgets.first(where: { $0.id == id }) else { continue }
             let scale = cfg.textScale[id] ?? 1
@@ -792,14 +1048,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let mi = NSMenuItem(title: "\(i + 1)  \(w.title)\(suffix)",
                                 action: nil, keyEquivalent: "")
             let ops = NSMenu()
-            for (opTitle, sel) in [("Move Up", #selector(moveWidgetUp(_:))),
-                                   ("Move Down", #selector(moveWidgetDown(_:))),
+            for (opTitle, sel) in [("← Move Left", #selector(moveWidgetUp(_:))),
+                                   ("Move Right →", #selector(moveWidgetDown(_:))),
                                    ("Text Larger", #selector(textLarger(_:))),
                                    ("Text Smaller", #selector(textSmaller(_:))),
                                    ("Remove", #selector(removeWidget(_:)))] {
                 let op = NSMenuItem(title: opTitle, action: sel, keyEquivalent: "")
                 op.target = self
-                op.tag = side
+                op.tag = tag
                 op.representedObject = id
                 ops.addItem(op)
             }
@@ -813,12 +1069,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let mi = NSMenuItem(title: "Add \(w.title)",
                                 action: #selector(addWidget(_:)), keyEquivalent: "")
             mi.target = self
-            mi.tag = side
+            mi.tag = tag
             mi.representedObject = w.id
             sub.addItem(mi)
         }
         item.submenu = sub
         return item
+    }
+
+    @objc private func toggleGlass() {
+        Config.shared.glass.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func toggleBorder() {
+        Config.shared.border.toggle()
+        rebuildMenu()
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -833,7 +1099,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSide(_ sender: NSMenuItem) {
         let cfg = Config.shared
-        if sender.tag == 0 { cfg.leftEnabled.toggle() } else { cfg.rightEnabled.toggle() }
+        let side = sideForTag(sender.tag)
+        cfg.setEnabled(side, !cfg.enabled(side))
         rebuildMenu()
         layout()
     }
@@ -842,21 +1109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                _ transform: ([String], String) -> [String]) {
         guard let id = sender.representedObject as? String else { return }
         let cfg = Config.shared
-        if sender.tag == 0 {
-            cfg.leftWidgets = transform(cfg.leftWidgets, id)
-        } else {
-            cfg.rightWidgets = transform(cfg.rightWidgets, id)
-        }
+        let side = sideForTag(sender.tag)
+        cfg.setWidgets(side, transform(cfg.widgets(side), id))
         rebuildMenu()
-    }
-
-    private func moved(_ arr: [String], _ id: String, by delta: Int) -> [String] {
-        guard let i = arr.firstIndex(of: id) else { return arr }
-        let j = i + delta
-        guard j >= 0, j < arr.count else { return arr }
-        var a = arr
-        a.swapAt(i, j)
-        return a
     }
 
     @objc private func addWidget(_ sender: NSMenuItem) {
@@ -866,26 +1121,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mutateWidgets(sender) { arr, id in arr.filter { $0 != id } }
     }
     @objc private func moveWidgetUp(_ sender: NSMenuItem) {
-        mutateWidgets(sender) { moved($0, $1, by: -1) }
+        mutateWidgets(sender) { movedIds($0, $1, by: -1) }
     }
     @objc private func moveWidgetDown(_ sender: NSMenuItem) {
-        mutateWidgets(sender) { moved($0, $1, by: 1) }
+        mutateWidgets(sender) { movedIds($0, $1, by: 1) }
     }
 
-    private func bumpTextScale(_ sender: NSMenuItem, by delta: Double) {
+    @objc private func textLarger(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
-        let cfg = Config.shared
-        var t = cfg.textScale
-        t[id] = min(1.8, max(0.6, (t[id] ?? 1) + delta))
-        cfg.textScale = t
+        Config.shared.bumpScale(id, by: 0.1)
+        rebuildMenu()
+    }
+    @objc private func textSmaller(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        Config.shared.bumpScale(id, by: -0.1)
         rebuildMenu()
     }
 
-    @objc private func textLarger(_ sender: NSMenuItem) { bumpTextScale(sender, by: 0.1) }
-    @objc private func textSmaller(_ sender: NSMenuItem) { bumpTextScale(sender, by: -0.1) }
-
     @objc private func startPomodoro() { Pomodoro.shared.start(minutes: 25) }
     @objc private func stopPomodoro() { Pomodoro.shared.stop() }
+
+    // 容器 = [glass hosting view 鋪滿] + [左右縮放握把疊在邊緣]，autoresizing 跟著寬度走
+    private func setupFloatContent() {
+        let container = FloatContainer(frame: NSRect(origin: .zero,
+                                                     size: Config.shared.floatFrame.size))
+        let host = FirstMouseHostingView(rootView: PanelView(side: "float"))
+        host.frame = container.bounds
+        host.autoresizingMask = [.width, .height]
+        container.addSubview(host)
+        let hw = ResizeHandleView.width
+        let left = ResizeHandleView(edge: .left)
+        left.frame = NSRect(x: 0, y: 0, width: hw, height: container.bounds.height)
+        left.autoresizingMask = [.height, .maxXMargin]
+        let right = ResizeHandleView(edge: .right)
+        right.frame = NSRect(x: container.bounds.width - hw, y: 0,
+                             width: hw, height: container.bounds.height)
+        right.autoresizingMask = [.minXMargin, .height]
+        container.addSubview(left)
+        container.addSubview(right)
+        container.leftHandle = left
+        container.rightHandle = right
+        floatPanel.contentView = container
+    }
+
+    private func updateFloatPanel() {
+        let cfg = Config.shared
+        guard cfg.floatEnabled else { floatPanel.orderOut(nil); return }
+        if floatPanel.frame != cfg.floatFrame {
+            restoringFloat = true
+            floatPanel.setFrame(cfg.floatFrame, display: true)
+            restoringFloat = false
+        }
+        floatPanel.orderFrontRegardless()
+    }
+
+    // 使用者拖曳 / 縮放浮動面板後存位置與寬度
+    func windowDidMove(_ notification: Notification) { saveFloatFrame(notification) }
+    func windowDidResize(_ notification: Notification) { saveFloatFrame(notification) }
+
+    private func saveFloatFrame(_ notification: Notification) {
+        guard !restoringFloat, notification.object as? NSWindow === floatPanel else { return }
+        Config.shared.floatFrame = floatPanel.frame
+    }
 
     private func tick() {
         tickCount += 1
@@ -895,6 +1192,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func mouseInDock(_ dock: NSRect) -> Bool {
         dock.insetBy(dx: -16, dy: 0).contains(NSEvent.mouseLocation)
+    }
+
+    // 這函式只在 dock 存在（reserved > 24）時被呼叫，所以一般最大化視窗會停在 dock 上緣、
+    // 碰不到螢幕最底。fullscreen（含 Ghostty 的 non-native fullscreen）則從 menu bar 下方
+    // 一路蓋到螢幕最底、佔滿整個寬度，蓋住面板所在的 dock 死角。用這個特徵分辨。
+    private func hasFullscreenWindow(on screen: NSScreen) -> Bool {
+        guard let primary = NSScreen.screens.first,
+              let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
+                  as? [[String: Any]] else { return false }
+        let cgScreen = CGRect(x: screen.frame.minX,
+                              y: primary.frame.height - screen.frame.maxY,
+                              width: screen.frame.width, height: screen.frame.height)
+        let menuBar: CGFloat = 40  // window 頂端最多離螢幕頂 menu bar 高度
+        for info in list {
+            guard info[kCGWindowLayer as String] as? Int == 0,
+                  let dict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let r = CGRect(dictionaryRepresentation: dict as CFDictionary)
+            else { continue }
+            // 必須「剛好」貼齊這個螢幕：左右對齊、底部貼齊、頂端在 menu bar 內。
+            // 只查左右底＋頂端範圍就能排掉比螢幕寬、或飄在螢幕外的 overlay（如 cua-driver）。
+            let topInRange = (r.minY - cgScreen.minY) >= -2
+                && (r.minY - cgScreen.minY) <= menuBar
+            let bottomAligned = abs(r.maxY - cgScreen.maxY) < 2
+            let leftAligned = abs(r.minX - cgScreen.minX) < 2
+            let rightAligned = abs(r.maxX - cgScreen.maxX) < 2
+            if topInRange, bottomAligned, leftAligned, rightAligned { return true }
+        }
+        return false
     }
 
     private func mouseNearDock() -> Bool {
@@ -907,6 +1232,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func layout() {
         guard let (dock, screen) = dockFrameAndScreen() else {
+            leftPanel.orderOut(nil)
+            rightPanel.orderOut(nil)
+            lastApplied = nil
+            return
+        }
+        // fullscreen 時讓路（dock 也是這樣）
+        if hasFullscreenWindow(on: screen) {
             leftPanel.orderOut(nil)
             rightPanel.orderOut(nil)
             lastApplied = nil
@@ -949,7 +1281,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func place(_ panel: NSPanel, zoneMinX: CGFloat, zoneMaxX: CGFloat,
                        y: CGFloat, h: CGFloat) {
-        let minW: CGFloat = 200
+        // 死角只要放得下最小的 widget（clock/pomodoro ~90-100pt）就顯示面板；
+        // 塞得下幾個由 fitting() 決定。窄螢幕 dock 很寬時死角小，門檻高會整個藏掉。
+        let minW: CGFloat = 120
         let available = zoneMaxX - zoneMinX
         guard available >= minW, h > 30 else { panel.orderOut(nil); return }
         let target = NSRect(x: zoneMinX, y: y, width: available, height: h)
