@@ -568,8 +568,11 @@ struct NowPlayingView: View {
     }
 }
 
-// 遠端 herdr 的 agent 狀態看板。
-// ponytail: host 與 herdr 路徑寫死 omarchy-outside；要換機器改這裡
+// herdr widget 連的遠端主機（ssh host alias）。空字串 = 未設定。
+// 設定：`defaults write com.unayung.Spacer herdrHost <你的-ssh-host>`
+let herdrHost = UserDefaults.standard.string(forKey: "herdrHost") ?? ""
+
+// 遠端 herdr 的 agent 狀態看板（ssh 到 herdrHost 跑 `herdr agent list`）。
 struct HerdrView: View {
     @Environment(\.widgetScale) private var ws
     @State private var counts: [String: Int] = [:]
@@ -594,7 +597,7 @@ struct HerdrView: View {
             } else {
                 HStack(spacing: 5 * ws) {
                     Image(systemName: "cpu").font(.system(size: 10 * ws, weight: .semibold))
-                    MicroLabel(text: "herdr —")
+                    MicroLabel(text: herdrHost.isEmpty ? "set herdrHost" : "herdr —")
                 }
                 .foregroundStyle(.secondary)
             }
@@ -635,11 +638,12 @@ struct HerdrView: View {
     }
 
     private func refresh() {
+        guard !herdrHost.isEmpty else { return }  // 沒設主機就不連
         DispatchQueue.global().async {
             // ControlMaster 讓 10 秒一次的輪詢重用連線，不用每次重新握手
             let cmd = "ssh -o BatchMode=yes -o ConnectTimeout=5 " +
                 "-o ControlMaster=auto -o ControlPath=/tmp/spacer-ssh-%r@%h " +
-                "-o ControlPersist=120 omarchy-outside " +
+                "-o ControlPersist=120 \(herdrHost) " +
                 "'~/.local/bin/herdr agent list'"
             guard let out = shell(cmd),
                   let data = out.data(using: .utf8),
@@ -802,13 +806,14 @@ func runDetached(_ cmd: String) {
 /// Ghostty 開著但沒 herdr 分頁 → 前景視窗開新分頁（沒視窗就開新視窗）；
 /// Ghostty 沒開 → 直接以 herdr 啟動
 func openHerdrInGhostty() {
-    let herdr = "\(NSHomeDirectory())/.local/bin/herdr --remote omarchy-outside"
+    guard !herdrHost.isEmpty else { return }
+    let herdr = "\(NSHomeDirectory())/.local/bin/herdr --remote \(herdrHost)"
     runDetached("""
     if [ "$(osascript -e 'application "Ghostty" is running')" != "true" ]; then
     open -na Ghostty --args -e \(herdr)
     exit 0
     fi
-    pids=$(ps ax -o pid=,command= | awk '/[h]erdr --remote omarchy-outside/{printf ",%s", $1}')
+    pids=$(ps ax -o pid=,command= | awk '/[h]erdr --remote \(herdrHost)/{printf ",%s", $1}')
     HERDR="\(herdr)"
     osascript <<APPLESCRIPT
     tell application "Ghostty"
