@@ -671,6 +671,7 @@ struct HerdrView: View {
 struct UnreadView: View {
     @Environment(\.widgetScale) private var ws
     @State private var badges: [String: String] = [:]
+    @State private var icons: [String: NSImage] = [:]  // app 名 → 真實 app icon（快取）
     @State private var trusted = AXIsProcessTrusted()
     private let tick = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
     // (dock 標題, 微標籤, SF Symbol)
@@ -685,23 +686,18 @@ struct UnreadView: View {
             if !trusted {
                 hint("lock.fill", "grant access") { requestAccess() }
             } else {
-                let active = apps.filter { !(badges[$0.name] ?? "").isEmpty }
+                let active = Array(apps.filter { !(badges[$0.name] ?? "").isEmpty }.prefix(4))
                 if active.isEmpty {
                     hint("bell", "no unread", nil)
                 } else {
-                    // 只放 圖示＋數字（不放文字標籤），三個才塞得下 200pt
-                    HStack(spacing: 6 * ws) {
-                        ForEach(active, id: \.name) { app in
-                            Pill(tint: .hud) {
-                                HStack(spacing: 5 * ws) {
-                                    Image(systemName: app.icon)
-                                        .font(.system(size: 11 * ws, weight: .semibold))
-                                        .foregroundStyle(Color.hud)
-                                    badgeValue(badges[app.name] ?? "")
-                                }
+                    // 最多 4 個 → 2 欄格線（2x2）；圖示＋數字，不放文字標籤
+                    let rows = stride(from: 0, to: active.count, by: 2)
+                        .map { Array(active[$0..<min($0 + 2, active.count)]) }
+                    VStack(spacing: 5 * ws) {
+                        ForEach(rows.indices, id: \.self) { r in
+                            HStack(spacing: 6 * ws) {
+                                ForEach(rows[r], id: \.name) { app in pill(app) }
                             }
-                            .contentShape(Capsule())
-                            .onTapGesture { runDetached("open -a '\(app.name)'") }
                         }
                     }
                 }
@@ -709,6 +705,24 @@ struct UnreadView: View {
         }
         .onAppear { refresh() }
         .onReceive(tick) { _ in refresh() }
+    }
+
+    private func pill(_ app: (name: String, label: String, icon: String)) -> some View {
+        Pill(tint: .hud) {
+            HStack(spacing: 5 * ws) {
+                if let ic = icons[app.name] {
+                    Image(nsImage: ic).resizable()
+                        .frame(width: 15 * ws, height: 15 * ws)
+                } else {
+                    Image(systemName: app.icon)
+                        .font(.system(size: 11 * ws, weight: .semibold))
+                        .foregroundStyle(Color.hud)
+                }
+                badgeValue(badges[app.name] ?? "")
+            }
+        }
+        .contentShape(Capsule())
+        .onTapGesture { runDetached("open -a '\(app.name)'") }
     }
 
     private func hint(_ icon: String, _ text: String,
@@ -735,6 +749,13 @@ struct UnreadView: View {
     private func refresh() {
         trusted = AXIsProcessTrusted()
         guard trusted else { return }
+        // 真實 app icon 只抓一次（系統已快取，主執行緒抓很便宜）
+        for app in apps where icons[app.name] == nil {
+            if let r = NSWorkspace.shared.runningApplications
+                .first(where: { $0.localizedName == app.name }), let ic = r.icon {
+                icons[app.name] = ic
+            }
+        }
         DispatchQueue.global().async {
             let b = Self.dockBadges()
             DispatchQueue.main.async { badges = b }
