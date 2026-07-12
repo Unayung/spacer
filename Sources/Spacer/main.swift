@@ -684,25 +684,38 @@ struct UnreadView: View {
         ("Messages", "msg", "message.fill"),
     ]
 
+    // 一個有徽章的 app：id = 實際 dock 標題（可能是 "Discord PTB"）
+    private struct Entry: Identifiable { let id: String; let value: String; let fallback: String }
+
+    // 設定清單 prefix-match dock 標題（"Discord" ⇒ "Discord PTB"），保留原順序
+    private func activeEntries() -> [Entry] {
+        Array(apps.compactMap { app -> Entry? in
+            guard let hit = badges.first(where: {
+                $0.key.hasPrefix(app.name) && !$0.value.isEmpty
+            }) else { return nil }
+            return Entry(id: hit.key, value: hit.value, fallback: app.icon)
+        }.prefix(6))
+    }
+
     var body: some View {
         Group {
             if !trusted {
                 hint("lock.fill", "grant access") { requestAccess() }
             } else {
-                let active = Array(apps.filter { !(badges[$0.name] ?? "").isEmpty }.prefix(6))
-                if active.isEmpty {
+                let entries = activeEntries()
+                if entries.isEmpty {
                     hint("bell", "no unread", nil)
                 } else {
                     // 欄數隨數量平衡（≤3 一排，4→2x2，5-6→3 欄兩排），格子撐滿內部
-                    let cols = active.count <= 3 ? active.count : (active.count + 1) / 2
-                    let rows = (active.count + cols - 1) / cols
-                    VStack(spacing: 5 * ws) {
+                    let cols = entries.count <= 3 ? entries.count : (entries.count + 1) / 2
+                    let rows = (entries.count + cols - 1) / cols
+                    VStack(spacing: 6 * ws) {
                         ForEach(0..<rows, id: \.self) { r in
-                            HStack(spacing: 5 * ws) {
+                            HStack(spacing: 6 * ws) {
                                 ForEach(0..<cols, id: \.self) { c in
                                     let idx = r * cols + c
-                                    if idx < active.count {
-                                        tile(active[idx])
+                                    if idx < entries.count {
+                                        tile(entries[idx])
                                     } else {
                                         Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
                                     }
@@ -712,7 +725,8 @@ struct UnreadView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.vertical, 6 * ws)
+                    .padding(.horizontal, 10 * ws)
+                    .padding(.vertical, 8 * ws)
                 }
             }
         }
@@ -720,22 +734,23 @@ struct UnreadView: View {
         .onReceive(tick) { _ in refresh() }
     }
 
-    private func tile(_ app: (name: String, label: String, icon: String)) -> some View {
+    private func tile(_ e: Entry) -> some View {
         HStack(spacing: 6 * ws) {
-            if let ic = icons[app.name] {
-                Image(nsImage: ic).resizable().frame(width: 17 * ws, height: 17 * ws)
+            if let ic = icons[e.id] {
+                Image(nsImage: ic).resizable().frame(width: 18 * ws, height: 18 * ws)
             } else {
-                Image(systemName: app.icon)
-                    .font(.system(size: 12 * ws, weight: .semibold))
+                Image(systemName: e.fallback)
+                    .font(.system(size: 13 * ws, weight: .semibold))
                     .foregroundStyle(Color.hud)
             }
-            badgeValue(badges[app.name] ?? "")
+            badgeValue(e.value)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color.hud.opacity(0.15)))
+        // 中性底色，讓彩色 app icon 自己當主角
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(.primary.opacity(0.08)))
         .contentShape(Rectangle())
-        .onTapGesture { runDetached("open -a '\(app.name)'") }
+        .onTapGesture { runDetached("open -a '\(e.id)'") }
     }
 
     private func hint(_ icon: String, _ text: String,
@@ -751,27 +766,28 @@ struct UnreadView: View {
 
     @ViewBuilder private func badgeValue(_ s: String) -> some View {
         if Int(s) != nil {
-            Text(s).font(.system(size: 13 * ws, weight: .semibold, design: .rounded))
+            Text(s).font(.system(size: 14 * ws, weight: .semibold, design: .rounded))
                 .monospacedDigit()
         } else {  // Slack 的 "•" 之類：只有紅點沒數字
-            Image(systemName: "circle.fill").font(.system(size: 6 * ws))
-                .foregroundStyle(Color.hud)
+            Circle().fill(Color.hud).frame(width: 6 * ws, height: 6 * ws)
         }
     }
 
     private func refresh() {
         trusted = AXIsProcessTrusted()
         guard trusted else { return }
-        // 真實 app icon 只抓一次（系統已快取，主執行緒抓很便宜）
-        for app in apps where icons[app.name] == nil {
-            if let r = NSWorkspace.shared.runningApplications
-                .first(where: { $0.localizedName == app.name }), let ic = r.icon {
-                icons[app.name] = ic
-            }
-        }
         DispatchQueue.global().async {
             let b = Self.dockBadges()
-            DispatchQueue.main.async { badges = b }
+            DispatchQueue.main.async {
+                badges = b
+                // 用實際 dock 標題抓 app icon（"Discord PTB" 等），系統已快取
+                for (title, val) in b where !val.isEmpty && icons[title] == nil {
+                    if let r = NSWorkspace.shared.runningApplications
+                        .first(where: { $0.localizedName == title }), let ic = r.icon {
+                        icons[title] = ic
+                    }
+                }
+            }
         }
     }
 
