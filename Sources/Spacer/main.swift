@@ -689,15 +689,15 @@ struct UnreadView: View {
                 if active.isEmpty {
                     hint("bell", "no unread", nil)
                 } else {
-                    HStack(spacing: 8 * ws) {
+                    // 只放 圖示＋數字（不放文字標籤），三個才塞得下 200pt
+                    HStack(spacing: 6 * ws) {
                         ForEach(active, id: \.name) { app in
                             Pill(tint: .hud) {
                                 HStack(spacing: 5 * ws) {
                                     Image(systemName: app.icon)
-                                        .font(.system(size: 10 * ws, weight: .semibold))
+                                        .font(.system(size: 11 * ws, weight: .semibold))
                                         .foregroundStyle(Color.hud)
                                     badgeValue(badges[app.name] ?? "")
-                                    MicroLabel(text: app.label)
                                 }
                             }
                             .contentShape(Capsule())
