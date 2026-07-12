@@ -76,22 +76,47 @@ func shell(_ cmd: String) -> String? {
 
 final class Pomodoro: ObservableObject {
     static let shared = Pomodoro()
-    @Published var endDate: Date?
-    @Published var total: Double = 0  // 這輪總秒數，給進度環用
+    @Published var endDate: Date?          // 執行中：結束時間
+    @Published var total: Double = 0       // 這輪總秒數，給進度環用
+    @Published var pausedRemaining: Double? // 暫停中：剩幾秒
     private var timer: Timer?
+
+    var isRunning: Bool { endDate != nil }
+    var isPaused: Bool { pausedRemaining != nil }
+
+    func remaining(at date: Date) -> Double {
+        if let end = endDate { return max(0, end.timeIntervalSince(date)) }
+        return pausedRemaining ?? 0
+    }
 
     func start(minutes: Int) {
         total = Double(minutes) * 60
-        endDate = Date().addingTimeInterval(total)
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: total, repeats: false) { _ in
-            NSSound(named: "Glass")?.play()
-        }
+        begin(remaining: total)
     }
-
-    func stop() {
+    func pause() {
+        guard let end = endDate else { return }
+        pausedRemaining = max(0, end.timeIntervalSinceNow)
         endDate = nil
         timer?.invalidate()
+    }
+    func resume() {
+        guard let r = pausedRemaining else { return }
+        pausedRemaining = nil
+        begin(remaining: r)
+    }
+    func stop() {
+        endDate = nil
+        pausedRemaining = nil
+        total = 0
+        timer?.invalidate()
+    }
+
+    private func begin(remaining: Double) {
+        endDate = Date().addingTimeInterval(remaining)
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { _ in
+            NSSound(named: "Glass")?.play()
+        }
     }
 }
 
@@ -269,18 +294,18 @@ struct StatsView: View {
 
     private func row(_ icon: String, _ label: String,
                      value: Double, readout: String) -> some View {
-        HStack(spacing: 8 * ws) {
+        HStack(spacing: 7 * ws) {
             Image(systemName: icon)
                 .font(.system(size: 10 * ws, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 15 * ws)
-            MicroLabel(text: label).frame(width: 28 * ws, alignment: .leading)
-            Meter(value: value, tint: .load(value)).frame(width: 96 * ws)
+                .frame(width: 14 * ws)
+            MicroLabel(text: label).frame(width: 26 * ws, alignment: .leading)
+            Meter(value: value, tint: .load(value))  // 無固定寬 → 填滿剩餘空間
             Text(readout)
                 .font(.system(size: 11 * ws, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(Color.load(value))
-                .frame(width: 40 * ws, alignment: .trailing)
+                .frame(width: 38 * ws, alignment: .trailing)
         }
     }
 }
@@ -377,6 +402,10 @@ struct CalendarView: View {
     @State private var status = "…"  // 空/未授權時的提示
     @State private var store = EKEventStore()
     private let tick = Timer.publish(every: 300, on: .main, in: .common).autoconnect()
+    // 固定 HH:mm，一行不換行，把橫向空間讓給標題
+    static let timeFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"; return f
+    }()
 
     var body: some View {
         Group {
@@ -390,17 +419,18 @@ struct CalendarView: View {
             } else {
                 VStack(alignment: .leading, spacing: 5 * ws) {
                     ForEach(events) { e in
-                        HStack(spacing: 7 * ws) {
+                        HStack(alignment: .top, spacing: 7 * ws) {
                             Text(e.time)
                                 .font(.system(size: 10 * ws, weight: .semibold,
                                               design: .rounded))
                                 .monospacedDigit()
                                 .foregroundStyle(Color.hud)
-                                .frame(width: 44 * ws, alignment: .leading)
+                                .frame(width: 34 * ws, alignment: .leading)
                             Text(e.title)
                                 .font(.system(size: 11 * ws))
                                 .foregroundStyle(.primary)
-                                .lineLimit(1)
+                                .lineLimit(2)  // 太長就換行（最多兩行）
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
@@ -423,10 +453,9 @@ struct CalendarView: View {
             let list = store.events(matching: predicate)
                 .filter { !$0.isAllDay }
                 .sorted { $0.startDate < $1.startDate }
-                .prefix(3)
-                .map { CalEvent(
-                    time: $0.startDate.formatted(date: .omitted, time: .shortened),
-                    title: $0.title ?? "") }
+                .prefix(2)  // 換行後每則可能兩行，2 則才塞得進 72pt
+                .map { CalEvent(time: Self.timeFmt.string(from: $0.startDate),
+                                title: $0.title ?? "") }
             DispatchQueue.main.async {
                 events = Array(list)
                 status = "all clear today"
@@ -831,37 +860,56 @@ struct PomodoroView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { ctx in
-            let remain = model.endDate.map { $0.timeIntervalSince(ctx.date) } ?? 0
-            let running = model.endDate != nil && remain > 0
-            let done = model.endDate != nil && remain <= 0
+            let remain = model.remaining(at: ctx.date)
+            let running = model.isRunning && remain > 0
+            let done = model.isRunning && remain <= 0
             let progress = model.total > 0 ? max(0, min(1, remain / model.total)) : 0
-            ZStack {
-                Circle()
-                    .stroke(.primary.opacity(0.14), lineWidth: 3 * ws)
-                Circle()
-                    .trim(from: 0, to: running ? progress : (done ? 1 : 0))
-                    .stroke(done ? Color.load(1) : .hud,
-                            style: StrokeStyle(lineWidth: 3 * ws, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                VStack(spacing: 1) {
-                    if running {
-                        Text(String(format: "%d:%02d", Int(remain) / 60, Int(remain) % 60))
-                            .font(.system(size: 13 * ws, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                    } else {
-                        Image(systemName: done ? "checkmark" : "timer")
-                            .font(.system(size: 13 * ws, weight: .semibold))
-                            .foregroundStyle(done ? Color.load(1) : Color(nsColor: .secondaryLabelColor))
+            HStack(spacing: 12 * ws) {
+                ring(running: running, done: done, progress: progress, remain: remain)
+                HStack(spacing: 11 * ws) {
+                    btn("play.fill", on: !running) {
+                        model.isPaused ? model.resume() : model.start(minutes: 25)
                     }
-                    MicroLabel(text: done ? "done" : "focus")
+                    btn("pause.fill", on: running) { model.pause() }
+                    btn("stop.fill", on: model.isRunning || model.isPaused) { model.stop() }
                 }
             }
-            .frame(width: 46 * ws, height: 46 * ws)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                model.endDate == nil ? model.start(minutes: 25) : model.stop()
+        }
+    }
+
+    private func ring(running: Bool, done: Bool, progress: Double, remain: Double) -> some View {
+        ZStack {
+            Circle().stroke(.primary.opacity(0.14), lineWidth: 3 * ws)
+            Circle()
+                .trim(from: 0, to: (running || model.isPaused) ? progress : (done ? 1 : 0))
+                .stroke(done ? Color.load(1) : .hud,
+                        style: StrokeStyle(lineWidth: 3 * ws, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 1) {
+                if running || model.isPaused {
+                    Text(String(format: "%d:%02d", Int(remain) / 60, Int(remain) % 60))
+                        .font(.system(size: 12 * ws, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                } else {
+                    Image(systemName: done ? "checkmark" : "timer")
+                        .font(.system(size: 12 * ws, weight: .semibold))
+                        .foregroundStyle(done ? Color.load(1)
+                                         : Color(nsColor: .secondaryLabelColor))
+                }
+                MicroLabel(text: done ? "done" : (model.isPaused ? "paused" : "focus"))
             }
         }
+        .frame(width: 44 * ws, height: 44 * ws)
+    }
+
+    private func btn(_ symbol: String, on: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13 * ws, weight: .semibold))
+                .foregroundStyle(on ? Color.primary : Color(nsColor: .tertiaryLabelColor))
+        }
+        .buttonStyle(.plain)
+        .disabled(!on)
     }
 }
 
