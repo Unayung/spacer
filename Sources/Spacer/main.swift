@@ -1100,7 +1100,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.rebuildMenu()
                 self?.syncPanels()
             }
+        // 螢幕增減時把跑到畫面外的面板收回主螢幕（拔掉外接螢幕不會弄丟面板）
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.clampPanelsToScreens() }
+        clampPanelsToScreens()
         syncPanels()
+    }
+
+    /// 中心點不在任何螢幕上的面板，收回主螢幕可見區左上
+    private func clampPanelsToScreens() {
+        let screens = NSScreen.screens
+        guard let main = screens.first else { return }
+        let vf = main.visibleFrame
+        for p in Config.shared.panels {
+            let w = FloatingPanel.width(for: p.widgets.count)
+            let center = NSPoint(x: p.x + w / 2, y: p.y + FloatingPanel.panelHeight / 2)
+            if !screens.contains(where: { $0.frame.contains(center) }) {
+                Config.shared.setPosition(
+                    p.id,
+                    x: min(max(vf.minX + 40, vf.minX), vf.maxX - w),
+                    y: vf.maxY - FloatingPanel.panelHeight - 40)
+            }
+        }
     }
 
     // MARK: 面板管理

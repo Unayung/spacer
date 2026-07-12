@@ -9,7 +9,11 @@
 macOS 14+（玻璃背景在 macOS 26 是 Liquid Glass，較舊版本退回毛玻璃）。純 SwiftUI/AppKit，
 單一檔案 `Sources/Spacer/main.swift`。
 
-## 安裝
+## 下載 / 安裝
+
+- **下載**：[Releases](../../releases) 有簽名好的 `Spacer.app`（未公證，第一次要**右鍵 → 打開**，
+  或 `xattr -dr com.apple.quarantine Spacer.app`），拖到 `/Applications` 即可。
+- **自己 build**：
 
 ```sh
 swift run          # 直接跑，不需要任何憑證
