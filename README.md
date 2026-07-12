@@ -55,16 +55,27 @@ swift run          # 直接跑，不需要任何憑證
 Start / Stop Pomodoro ・ 每塊面板（Pin、widget 管理、Remove Panel）・ Add Panel ・
 Glass Background ・ Panel Border ・ Launch at Login ・ Quit。
 
-## 權限與相依
+## 選用 CLI 相依
+
+有些 widget 需要對應的 CLI，用 [Homebrew](https://brew.sh) 裝；沒裝的 widget 顯示 `—`，不影響其他。
+
+```sh
+brew install gh             # GitHub widget，裝完跑 gh auth login 登入
+brew install media-control  # Now Playing widget（讀系統正在播放）
+```
+
+- **GitHub** → `gh`（記得 `gh auth login`）。
+- **Now Playing** → `media-control`。
+- **herdr Agents** → `ssh`（macOS 內建）＋遠端主機已裝 herdr；用
+  `defaults write com.unayung.Spacer herdrHost <你的-ssh-host>` 設主機（或選單 **Set herdr Host…**），
+  點擊動作會開 [Ghostty](https://ghostty.org)。沒設主機會顯示 `set herdrHost`。
+
+## 權限
 
 - **Calendar**：EventKit，第一次點 Calendar widget 會要授權。
 - **Apple Events**：herdr widget 用 AppleScript 操作 Ghostty 開分頁，第一次會要授權。
 - **輔助使用（Accessibility）**：Unread widget 讀 dock 徽章要用；沒授權會顯示 `grant access`，
   點一下會跳系統提示，或到 System Settings → Privacy & Security → Accessibility 開 Spacer。
-- 選用 CLI：`gh`（GitHub）、`media-control`（Now Playing）、`ssh`＋遠端 `herdr`（herdr widget）。
-  沒裝的 widget 會顯示 `—`，不影響其他 widget。
-- **herdr 主機**：herdr widget 要連的 ssh host 沒寫死，用
-  `defaults write com.unayung.Spacer herdrHost <你的-ssh-host>` 設定後重開即可（沒設會顯示 `set herdrHost`）。
 
 ## 取捨（要升級再說）
 
