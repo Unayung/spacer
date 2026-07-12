@@ -674,11 +674,14 @@ struct UnreadView: View {
     @State private var icons: [String: NSImage] = [:]  // app 名 → 真實 app icon（快取）
     @State private var trusted = AXIsProcessTrusted()
     private let tick = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
-    // (dock 標題, 微標籤, SF Symbol)
+    // (dock 標題, 微標籤, SF Symbol 後備圖示)；最多顯示 6 個
     private let apps: [(name: String, label: String, icon: String)] = [
         ("Spark", "mail", "envelope.fill"),
         ("LINE", "line", "bubble.left.fill"),
         ("Slack", "slack", "number"),
+        ("Telegram", "tg", "paperplane.fill"),
+        ("Discord", "discord", "gamecontroller.fill"),
+        ("Messages", "msg", "message.fill"),
     ]
 
     var body: some View {
@@ -686,20 +689,30 @@ struct UnreadView: View {
             if !trusted {
                 hint("lock.fill", "grant access") { requestAccess() }
             } else {
-                let active = Array(apps.filter { !(badges[$0.name] ?? "").isEmpty }.prefix(4))
+                let active = Array(apps.filter { !(badges[$0.name] ?? "").isEmpty }.prefix(6))
                 if active.isEmpty {
                     hint("bell", "no unread", nil)
                 } else {
-                    // 最多 4 個 → 2 欄格線（2x2）；圖示＋數字，不放文字標籤
-                    let rows = stride(from: 0, to: active.count, by: 2)
-                        .map { Array(active[$0..<min($0 + 2, active.count)]) }
+                    // 欄數隨數量平衡（≤3 一排，4→2x2，5-6→3 欄兩排），格子撐滿內部
+                    let cols = active.count <= 3 ? active.count : (active.count + 1) / 2
+                    let rows = (active.count + cols - 1) / cols
                     VStack(spacing: 5 * ws) {
-                        ForEach(rows.indices, id: \.self) { r in
-                            HStack(spacing: 6 * ws) {
-                                ForEach(rows[r], id: \.name) { app in pill(app) }
+                        ForEach(0..<rows, id: \.self) { r in
+                            HStack(spacing: 5 * ws) {
+                                ForEach(0..<cols, id: \.self) { c in
+                                    let idx = r * cols + c
+                                    if idx < active.count {
+                                        tile(active[idx])
+                                    } else {
+                                        Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    }
+                                }
                             }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.vertical, 6 * ws)
                 }
             }
         }
@@ -707,21 +720,21 @@ struct UnreadView: View {
         .onReceive(tick) { _ in refresh() }
     }
 
-    private func pill(_ app: (name: String, label: String, icon: String)) -> some View {
-        Pill(tint: .hud) {
-            HStack(spacing: 5 * ws) {
-                if let ic = icons[app.name] {
-                    Image(nsImage: ic).resizable()
-                        .frame(width: 15 * ws, height: 15 * ws)
-                } else {
-                    Image(systemName: app.icon)
-                        .font(.system(size: 11 * ws, weight: .semibold))
-                        .foregroundStyle(Color.hud)
-                }
-                badgeValue(badges[app.name] ?? "")
+    private func tile(_ app: (name: String, label: String, icon: String)) -> some View {
+        HStack(spacing: 6 * ws) {
+            if let ic = icons[app.name] {
+                Image(nsImage: ic).resizable().frame(width: 17 * ws, height: 17 * ws)
+            } else {
+                Image(systemName: app.icon)
+                    .font(.system(size: 12 * ws, weight: .semibold))
+                    .foregroundStyle(Color.hud)
             }
+            badgeValue(badges[app.name] ?? "")
         }
-        .contentShape(Capsule())
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.hud.opacity(0.15)))
+        .contentShape(Rectangle())
         .onTapGesture { runDetached("open -a '\(app.name)'") }
     }
 
