@@ -283,6 +283,7 @@ struct StatsView: View {
             row("memorychip", "ram", value: memUsed / memTotal,
                 readout: String(format: "%.1fG", memUsed / 1_073_741_824))
         }
+        .padding(.horizontal, 12 * ws)  // 面板 hPad=0，這格自己留點邊距不貼邊
         .onAppear { refresh() }
         .onReceive(tick) { _ in refresh() }
     }
@@ -1052,18 +1053,14 @@ func openHerdrInGhostty() {
 struct Widget {
     let id: String
     let title: String
-    var slots: Int = 1  // 佔幾個 200pt 格子；CPU/RAM 需要寬一點 → 2
     let action: (() -> Void)?  // 點擊該區塊時做什麼；nil = widget 自己處理
     let make: () -> AnyView
 }
 
-/// widget 佔幾格（找不到當 1）
-func widgetSlots(_ id: String) -> Int { allWidgets.first { $0.id == id }?.slots ?? 1 }
-
 let allWidgets: [Widget] = [
     Widget(id: "clock", title: "Clock",
            action: { runDetached("open -a Clock") }) { AnyView(ClockView()) },
-    Widget(id: "stats", title: "CPU / RAM", slots: 2,
+    Widget(id: "stats", title: "CPU / RAM",
            action: { runDetached("open -a 'Activity Monitor'") }) { AnyView(StatsView()) },
     Widget(id: "net", title: "Network",
            action: { runDetached("open -a 'Activity Monitor'") }) { AnyView(NetView()) },
@@ -1108,8 +1105,7 @@ struct PanelView: View {
     private func cell(_ w: Widget, ids: [String]) -> some View {
         w.make()
             .environment(\.widgetScale, CGFloat(config.textScale[w.id] ?? 1))
-            .frame(width: CGFloat(w.slots) * FloatingPanel.widgetWidth
-                   + CGFloat(w.slots - 1) * FloatingPanel.separator)
+            .frame(width: FloatingPanel.widgetWidth)
             .contentShape(Rectangle())
             .onTapGesture { w.action?() }
             .contextMenu {
@@ -1152,10 +1148,10 @@ final class FloatingPanel: NSPanel {
 
     var panelID = ""
 
-    /// 面板寬度：總格數 × 200 + 分隔線；格數 = 各 widget 的 slots 加總
+    /// 面板寬度：widget 數 × 200 + 分隔線
     static func width(for widgets: [String]) -> CGFloat {
-        let slots = max(1, widgets.reduce(0) { $0 + widgetSlots($1) })
-        return CGFloat(slots) * widgetWidth + CGFloat(slots - 1) * separator
+        let n = max(1, widgets.count)
+        return CGFloat(n) * widgetWidth + CGFloat(n - 1) * separator
     }
 
     init() {
