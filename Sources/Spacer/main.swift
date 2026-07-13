@@ -1052,33 +1052,36 @@ func openHerdrInGhostty() {
 struct Widget {
     let id: String
     let title: String
-    let minWidth: CGFloat  // 顯示所需的最小寬度，塞不下的 widget 直接不顯示
+    var slots: Int = 1  // 佔幾個 200pt 格子；CPU/RAM 需要寬一點 → 2
     let action: (() -> Void)?  // 點擊該區塊時做什麼；nil = widget 自己處理
     let make: () -> AnyView
 }
 
+/// widget 佔幾格（找不到當 1）
+func widgetSlots(_ id: String) -> Int { allWidgets.first { $0.id == id }?.slots ?? 1 }
+
 let allWidgets: [Widget] = [
-    Widget(id: "clock", title: "Clock", minWidth: 100,
+    Widget(id: "clock", title: "Clock",
            action: { runDetached("open -a Clock") }) { AnyView(ClockView()) },
-    Widget(id: "stats", title: "CPU / RAM", minWidth: 240,
+    Widget(id: "stats", title: "CPU / RAM", slots: 2,
            action: { runDetached("open -a 'Activity Monitor'") }) { AnyView(StatsView()) },
-    Widget(id: "net", title: "Network", minWidth: 110,
+    Widget(id: "net", title: "Network",
            action: { runDetached("open -a 'Activity Monitor'") }) { AnyView(NetView()) },
-    Widget(id: "github", title: "GitHub", minWidth: 160,
+    Widget(id: "github", title: "GitHub",
            action: { runDetached("open https://github.com") }) {
         AnyView(GitHubView())
     },
-    Widget(id: "nowplaying", title: "Now Playing", minWidth: 250, action: nil) {
+    Widget(id: "nowplaying", title: "Now Playing", action: nil) {
         AnyView(NowPlayingView())
     },
-    Widget(id: "calendar", title: "Calendar", minWidth: 230,
+    Widget(id: "calendar", title: "Calendar",
            action: { runDetached("open -a Calendar") }) { AnyView(CalendarView()) },
-    Widget(id: "pomodoro", title: "Pomodoro", minWidth: 90, action: nil) {
+    Widget(id: "pomodoro", title: "Pomodoro", action: nil) {
         AnyView(PomodoroView())
     },
-    Widget(id: "herdr", title: "herdr Agents", minWidth: 140,
+    Widget(id: "herdr", title: "herdr Agents",
            action: { openHerdrInGhostty() }) { AnyView(HerdrView()) },
-    Widget(id: "unread", title: "Unread", minWidth: 200,
+    Widget(id: "unread", title: "Unread",
            action: nil) { AnyView(UnreadView()) },
 ]
 
@@ -1105,7 +1108,8 @@ struct PanelView: View {
     private func cell(_ w: Widget, ids: [String]) -> some View {
         w.make()
             .environment(\.widgetScale, CGFloat(config.textScale[w.id] ?? 1))
-            .frame(width: FloatingPanel.widgetWidth)
+            .frame(width: CGFloat(w.slots) * FloatingPanel.widgetWidth
+                   + CGFloat(w.slots - 1) * FloatingPanel.separator)
             .contentShape(Rectangle())
             .onTapGesture { w.action?() }
             .contextMenu {
@@ -1148,10 +1152,10 @@ final class FloatingPanel: NSPanel {
 
     var panelID = ""
 
-    /// n 個 widget 該有的面板寬度：200*n + 分隔線(n-1)
-    static func width(for count: Int) -> CGFloat {
-        let n = max(1, count)
-        return CGFloat(n) * widgetWidth + CGFloat(n - 1) * separator
+    /// 面板寬度：總格數 × 200 + 分隔線；格數 = 各 widget 的 slots 加總
+    static func width(for widgets: [String]) -> CGFloat {
+        let slots = max(1, widgets.reduce(0) { $0 + widgetSlots($1) })
+        return CGFloat(slots) * widgetWidth + CGFloat(slots - 1) * separator
     }
 
     init() {
@@ -1212,7 +1216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let main = screens.first else { return }
         let vf = main.visibleFrame
         for p in Config.shared.panels {
-            let w = FloatingPanel.width(for: p.widgets.count)
+            let w = FloatingPanel.width(for: p.widgets)
             let center = NSPoint(x: p.x + w / 2, y: p.y + FloatingPanel.panelHeight / 2)
             if !screens.contains(where: { $0.frame.contains(center) }) {
                 Config.shared.setPosition(
@@ -1237,7 +1241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let win = windows[p.id] ?? makePanel(p.id)
             windows[p.id] = win
             let frame = NSRect(x: p.x, y: p.y,
-                               width: FloatingPanel.width(for: p.widgets.count),
+                               width: FloatingPanel.width(for: p.widgets),
                                height: FloatingPanel.panelHeight)
             if win.frame != frame {
                 restoring = true
